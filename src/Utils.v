@@ -59,9 +59,9 @@ Module Combinators.
         ([until_done]), or [P] holds now and every successor satisfies [until] again
         ([until_step]).  Because the definition is inductive, a proof is a finite derivation, so
         [until P Q initial] also says that every maximal path from [initial] reaches a [Q]-state,
-        or a state with no successor, after finitely many steps.  The switcher contracts in
-        [Properties] are stated with it: in system mode under an invariant until back in user mode
-        with the postcondition.  A commented-out [eventually] follows. *)
+        or a state satisfying [P] with no successor, after finitely many steps.  The switcher
+        contracts in [Properties] are stated with it: in system mode under an invariant until
+        back in user mode with the postcondition.  A commented-out [eventually] follows. *)
     Inductive until (P: State -> Prop) (Q: State -> Prop) (initial: State) : Prop :=
     | until_done:
       Q initial ->
