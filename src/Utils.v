@@ -37,6 +37,8 @@ Abbreviation EqDecider f := (forall x y, BoolSpec (x = y) (x <> y) (f x y)).
     [Properties]: [always], the inductive-invariant shape of the main theorem, and [until], the
     shape of the switcher contracts. *)
 Module Combinators.
+
+  (** Binds the step relation the two combinators are defined over. *)
   Section __.
     Context [State : Type] (step: State -> State -> Prop).
 
