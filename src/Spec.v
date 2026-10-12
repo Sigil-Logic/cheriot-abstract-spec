@@ -777,6 +777,13 @@ Section Machine.
 
       (* TODO: We might need some provable predicates on all ExnInfo as well
          (for instance, if NO_EXEC_PERMISSION, then MEPCC tag would still be valid) *)
+
+      (** The hypothesis every normal instruction carries: [FuncNormal], and, for a valid
+          register file, whenever the instruction succeeds the PCC had the execute permission,
+          the memory update is valid for the PCC and the register file's capabilities, the new
+          PCC and registers are reachable from them (the per-instruction monotonicity the main
+          theorem lifts to executions), the new PCC is executable and the register file stays
+          valid.  An exception is unconstrained (the TODO above). *)
       Definition WfNormalInst := forall rf pcc mem,
           ValidRf rf ->
           FuncNormal /\
@@ -814,6 +821,9 @@ Section Machine.
           | _, _ => False
           end.
 
+      (** The same for a system instruction, with the system state's capabilities (MEPCC, MTCC,
+          the trusted stack) among the sources and the targets, and the system permission
+          required of the PCC on success. *)
       Definition WfSystemInst pcc := forall rf mem mepcc mtcc exnInfo ts stat ints,
           ValidRf rf ->
           FuncSystem /\
@@ -839,6 +849,11 @@ Section Machine.
       Variable generalInst: UserContext -> SystemContext -> Result ExnInfo (UserContext * SystemContext).
 
       (* If the pcc does not have system permissions, the instruction should behave as a function of user state. *)
+
+      (** What [Inst_General] demands: when the PCC lacks the system permission, the instruction
+          agrees with some well-formed normal instruction on the user context and leaves the
+          system context unchanged; when it has it, the instruction is a well-formed system
+          instruction. *)
       Definition WfGeneralInst :=
         (exists normalInst,
            WfNormalInst normalInst /\
@@ -878,6 +893,13 @@ Section Machine.
               e1 = e2
           | _, _ => False
           end.
+
+      (** What [Inst_Call] demands: [FuncCallSentry], the register indices in range, and on
+          success, with an executable PCC: the source register held an executable capability,
+          which becomes the new PCC unsealed, with the interrupt status its sentry kind names
+          (kept for an unsealed target, per the TODO); and, when a link register is named, only
+          that register changes, to an executable backward sentry restricting the old PCC that
+          enables or disables interrupts as they were; otherwise the register file is unchanged. *)
       Definition WfCallSentryInst (src: RegIdx) (optLink: option RegIdx):= forall rf pcc ints mem,
           ValidRf rf ->
           src < ISA_NREGS /\
@@ -932,6 +954,10 @@ Section Machine.
           | _, _ => False
           end.
 
+      (** What [Inst_Ret] demands: [FuncRetSentry], the register index in range, and on success,
+          with an executable PCC: the source register held an executable backward sentry, which
+          becomes the new PCC unsealed, with the interrupt status it names; an unsealed source is
+          rejected (the TODO above). *)
       Definition WfRetSentryInst (src_idx: RegIdx):= forall rf pcc mem,
           ValidRf rf ->
           FuncRetSentry /\
@@ -967,6 +993,7 @@ Section Machine.
           let exn2 := exnInst (Build_UserThreadState rf pcc, m2) in
           exn1 = exn2.
 
+      (** What [Inst_Exn] demands: [FuncExn] only; the [caps] bound here are unused. *)
       Definition WfExnInst := forall rf pcc mem,
           let exn := exnInst (Build_UserThreadState rf pcc, mem) in
           let caps := pcc :: capsOfRf rf in
