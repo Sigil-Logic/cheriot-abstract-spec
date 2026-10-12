@@ -567,8 +567,10 @@ Section WithContext.
   End MemUpdateLemmas.
 
   (** A memory update authorized by capabilities whose writable addresses are disjoint from the
-      readable addresses of a set [t] leaves everything reachable from [t] unchanged.  These
-      lemmas are what makes one thread's step harmless to the others in the main theorem. *)
+      readable addresses of a set [t] makes nothing new reachable from [t]: everything reachable
+      from [t] afterwards was reachable before.  This is the new-to-old direction only; tag
+      removal may remove old paths, so the converse is not claimed.  These lemmas are what makes
+      one thread's step harmless to the others in the main theorem. *)
   Section SeparationLemmas.
 
     (** [RWAddressesDisjoint] is symmetric. *)
@@ -799,7 +801,7 @@ Section WithContext.
   (** A thread's user-state capabilities are among its capabilities. *)
   Section CapsOf.
 
-    (** The PCC and register file are among what [capsOfThread] lists. *)
+    (** The PCC and the register file's capabilities are among what [capsOfThread] lists. *)
     Lemma SubsetCapsOfUserTS:
       forall (thread: Thread), 
         Subset (capsOfUserTS (thread_userState thread)) (capsOfThread thread).
@@ -900,7 +902,7 @@ Section WithContext.
     Abbreviation SameThreadStep := (SameThreadStep fetchAddrs decode pccNotInBounds).
     Abbreviation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
 
-    (** A same-thread step keeps the number of threads. *)
+    (** A same-thread step keeps the number of threads, when the current index is in range. *)
     Lemma SameThreadStep_lengthThreads:
       forall m1 m2 ev,
         machine_curThreadId m1 < length (machine_threads m1) ->
@@ -913,7 +915,7 @@ Section WithContext.
       rewrite<-threadIdEq. eauto.
     Qed.
 
-    (** A same-thread step keeps the current thread index in range. *)
+    (** A same-thread step from a machine whose current index is in range leaves it in range. *)
     Lemma SameThreadStep_curId:
       forall m1 m2 ev,
         machine_curThreadId m1 < length (machine_threads m1) ->

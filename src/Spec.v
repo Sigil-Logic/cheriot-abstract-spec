@@ -381,11 +381,12 @@ Section Machine.
       else LabelIntersect labels1 labels2.
 
     (** The capability obtained by loading [loaded] through [loadAuthCap] ([LoadCap] below): the
-        permissions, the store labels and the three [capKeep] fields are intersected with the
-        loader's [capKeepPerms], [capKeepCanStore] and [capKeepCanBeStored] when [loaded] is
-        unsealed, and left as they are when it is sealed; [capCanBeStored] is intersected with the
-        loader's [capKeepCanBeStored] in either case (the comment at that field calls this a quirk
-        of CHERIoT); the sealing state, keys, bounds and cursor are [loaded]'s. *)
+        permissions, the store labels and the loaded capability's own [capKeepPerms],
+        [capKeepCanStore] and [capKeepCanBeStored] are intersected with the loader's three kept
+        lists when [loaded] is unsealed, and left as they are when it is sealed; [capCanBeStored]
+        is intersected with the loader's [capKeepCanBeStored] in either case (the comment at that
+        field calls this a quirk of CHERIoT); the sealing state, keys, bounds and cursor are
+        [loaded]'s. *)
     Definition attenuate (loadAuthCap: Cap) (loaded: Cap) : Cap :=
       let sealed := isSealed loaded in
       {| capSealed          := loaded.(capSealed);
@@ -423,9 +424,10 @@ Section Machine.
 
       (* NB: capCursor can change arbitrarily for unsealed caps. *)
 
-      (** [z] is a restriction of the unsealed [y]: the same sealing state, and permissions, store
-          labels, keys, bounds and the three [capKeep] lists each a subset of [y]'s.  The cursor is
-          unconstrained. *)
+      (** [z] is a restriction of [y] in the sense [Restrict] uses when [y] is unsealed (the
+          record itself does not constrain [y]'s sealing state): the same sealing state, and
+          permissions, store labels, keys, bounds and the three kept lists each a subset of
+          [y]'s.  The cursor is unconstrained. *)
       Record RestrictUnsealed : Prop := {
           restrictUnsealedEqs: SealEq;
           restrictUnsealedPermsSubset: Subset z.(capPerms) y.(capPerms);
@@ -438,9 +440,10 @@ Section Machine.
           restrictUnsealedKeepCanStoreSubset: Subset z.(capKeepCanStore) y.(capKeepCanStore);
           restrictUnsealedKeepCanBeStoredSubset: Subset z.(capKeepCanBeStored) y.(capKeepCanBeStored) }.
 
-      (** [z] is a restriction of the sealed [y]: everything equal as sets, the cursor equal, except
-          that [capCanBeStored] may shrink (the comment inside calls this a quirk of CHERIoT and
-          gives an example of its cost). *)
+      (** [z] is a restriction of [y] in the sense [Restrict] uses when [y] is sealed (the record
+          does not constrain [y]'s sealing state): everything equal as sets, the cursor equal,
+          except that [capCanBeStored] may shrink (the comment inside calls this a quirk of
+          CHERIoT and gives an example of its cost). *)
       Record RestrictSealed : Prop := {
           restrictSealedEqs: SealEq;
           restrictSealedPermsEq: EqSet z.(capPerms) y.(capPerms);
@@ -517,9 +520,10 @@ Section Machine.
 
       (* Transitively reachable addr listed with permissions, canStore and canBeStored *)
 
-      (** An address range, from [a] of length [sz], within the bounds of a reachable unsealed capability,
-          reported with that capability's permissions and store labels.  The properties derive the
-          readable, writable and executable addresses from it ([SpecLemmas]). *)
+      (** An address range, from [a] of length [sz], within the bounds of a reachable unsealed
+          capability, reported with that capability's permissions and store labels.  The
+          properties derive the readable, writable and executable addresses from it
+          ([SpecLemmas]). *)
       Inductive ReachableAddr: Addr -> nat -> list Perm.t -> list Label -> list Label -> Prop :=
       | HasAddr c (cPf: ReachableCap c) a sz (ina: Subset (seq a sz) c.(capAddrs)) (notSealed: c.(capSealed) = None)
         : ReachableAddr a sz c.(capPerms) c.(capCanStore) c.(capCanBeStored).
@@ -533,8 +537,8 @@ Section Machine.
       Section UpdMem.
         Variable mem': FullMemory.
 
-        (** [auth] is reachable, unsealed, has the store permission, and covers the range from [a] of
-          length [sz]. *)
+        (** [auth] is reachable, unsealed, has the store permission, and covers the range from
+            [a] of length [sz]. *)
         Definition StPermForAddr (auth: Cap) (a: Addr) (sz: nat) :=
           ReachableCap auth
           /\ In Perm.Store auth.(capPerms)
@@ -697,9 +701,11 @@ Section Machine.
         interrupt status. *)
     Definition SystemContext : Type := (SystemThreadState * InterruptStatus).
 
-    (** Two memories that agree wherever [caps] can reach.  The [Func] conditions of the
-        instruction sections below require an instruction to behave the same on two such
-        memories: it may depend on nothing it cannot reach. *)
+    (** Two memories [m1] and [m2] such that everything [caps] can reach in [m1] it reaches in
+        [m2] the same way, with the same bytes and tags; [m2] may reach more.  The conditions
+        [FuncNormal], [FuncSystem], [FuncCallSentry], [FuncRetSentry] and [FuncExn] below require
+        an instruction to behave the same on two such memories: it may depend on nothing it
+        cannot reach. *)
     Section ReachableMemSame.
       Variable m1 m2: FullMemory.
       Variable caps: list Cap.
@@ -761,9 +767,9 @@ Section Machine.
     Section NormalInst.
       Variable normalInst: UserContext -> Result ExnInfo UserContext.
 
-      (** The instruction depends only on what its thread can reach: on two memories that agree on
-          the reachable addresses, it yields the same user state and writes the same values, or the
-          same exception. *)
+      (** The instruction depends only on what its thread can reach: on two memories related by
+          [ReachableMemSame] (the second reaching everything the first does, alike), it yields
+          the same user state and writes the same values, or the same exception. *)
       Definition FuncNormal :=
         forall rf pcc m1 m2,
           ReachableMemSame m1 m2 (pcc :: capsOfRf rf) ->
@@ -807,8 +813,8 @@ Section Machine.
       Variable systemInst: UserContext -> SystemContext -> Result ExnInfo (UserContext * SystemContext).
 
       (** [FuncNormal] for a system instruction: the same user and system state and the same
-          updates, on two memories that agree on what the user state and the system state (MEPCC,
-          MTCC, the trusted stack) can reach. *)
+          updates, on two memories related by [ReachableMemSame] through what the user state and
+          the system state (MEPCC, MTCC, the trusted stack) can reach. *)
       Definition FuncSystem := forall rf pcc mepcc mtcc exnInfo ts stat ints m1 m2,
           ReachableMemSame m1 m2 ((pcc :: capsOfRf rf) ++ (mepcc :: mtcc :: capsOfTS ts)) ->
           match systemInst (Build_UserThreadState rf pcc, m1)
@@ -880,8 +886,7 @@ Section Machine.
                                Result ExnInfo (PCC * RegisterFile * InterruptStatus).
 
       (** The call depends only on what its thread can reach: the same PCC, register file and
-          interrupt status, or the same exception, on two memories that agree on the reachable
-          addresses. *)
+          interrupt status, or the same exception, on two memories related by [ReachableMemSame]. *)
       Definition FuncCallSentry :=
         forall rf pcc ints m1 m2,
           ReachableMemSame m1 m2 (pcc :: capsOfRf rf) ->
@@ -942,7 +947,7 @@ Section Machine.
     Section RetSentryInst.
       Variable retSentryInst: UserContext -> Result ExnInfo (PCC * InterruptStatus).
 
-      (** The return depends only on what its thread can reach. *)
+      (** The return depends only on what its thread can reach, in the same sense. *)
       Definition FuncRetSentry :=
         forall rf pcc m1 m2,
           ReachableMemSame m1 m2 (pcc :: capsOfRf rf) ->
@@ -985,7 +990,7 @@ Section Machine.
     Section ExnInst.
       Variable exnInst: UserContext -> EXNInfo.
 
-      (** The payload depends only on what the thread can reach. *)
+      (** The payload depends only on what the thread can reach, in the same sense. *)
       Definition FuncExn :=
         forall rf pcc m1 m2,
           ReachableMemSame m1 m2 (pcc :: capsOfRf rf) ->
@@ -1221,17 +1226,18 @@ End Machine.
 
 (** * Validation against the CHERIoT encoding
 
-    A concrete CHERIoT capability, with the compressed permission formats of the ISA, and the
-    function that builds an abstract [Cap] from it.  The module instantiates
-    [MachineTypeParams] with [N] and defines nothing else that the model uses; it is a check
-    that the abstract record can express the concrete one, with no proof about the mapping. *)
+    A concrete CHERIoT capability, with the compressed permission formats of the ISA, and a
+    function that builds an abstract [Cap] from it.  The module instantiates [MachineTypeParams]
+    with [N] and defines nothing else that the model uses; it is a first attempt at expressing
+    the concrete record in the abstract one, which does not yet cover the store permission (see
+    [mk_abstract_cap]), with no proof about the mapping. *)
 Module CHERIoTValidation.
   Import ListNotations.
   Local Open Scope N_scope.
 
-  (** The six permission formats of a CHERIoT capability, each carrying the bits the format
-      leaves free (global, store-local, load-mutable, load-global, access-system-registers,
-      user permission 0, seal, unseal) with the others implied by the format. *)
+  (** The six permission formats of a CHERIoT capability, each carrying as free bits those the
+      format leaves open (listed per constructor in the comment beside it) with the others
+      implied by the format. *)
   Inductive CompressedPerm :=
   | MemCapRW (GL: bool) (SL: bool) (LM: bool) (LG: bool) (* Implicit: LD, MC, SD *)
   | MemCapRO (GL: bool) (LM: bool) (LG: bool) (* Implicit: LD, MC *)
@@ -1246,9 +1252,10 @@ Module CHERIoTValidation.
       Key := N
     }.
 
-  (** A concrete capability: a reserved bit, a permission format, an object type below 8,
-      base, length and address, with the address within bounds (which compressed capabilities
-      guarantee by representability). *)
+  (** A concrete capability: a reserved bit, a permission format, an object type (meant to be
+      below 8, per the comment; the field carries no such constraint), base, length and address,
+      with a proof that the address is within bounds (which the comment attributes to the
+      representability of compressed capabilities). *)
   Record cheriot_cap :=
   { reserved: bool;
     permissions: CompressedPerm;
@@ -1367,16 +1374,16 @@ Module CHERIoTValidation.
         |}
     end.
 
-  (** The abstract [Cap] of a concrete capability.  The sealing state comes from the object
-      type: for an executable capability, 0 is unsealed, 1 to 5 are the five sentry kinds, and 6
-      and 7 map to unsealed (marked [TODO]); for a non-executable one, a nonzero object type is
-      a sealed capability with that type as its key.  The permissions follow the decompressed
-      bits, except that [Perm.Store] is absent from the candidate list, so this mapping never
-      sets the store permission; the store labels follow the store-local and global bits; both
-      key lists hold the address; the bounds are the range from the base of the given length;
-      the kept permissions drop [Perm.Store] unless load-mutable is set (and again never include
-      it, for the same reason); the kept store-to labels follow load-global; the cursor is the
-      address. *)
+  (** The abstract [Cap] of a concrete capability.  The sealing state comes from the object type:
+      for an executable capability, 0 is unsealed, 1 to 5 are the five sentry kinds, and 6 and 7
+      map to unsealed (marked [TODO]); for a non-executable one, a nonzero object type is a
+      sealed capability with that type as its key.  The permissions follow the decompressed bits,
+      except that [Perm.Store] is absent from the candidate list, so this mapping never sets the
+      store permission; the store labels follow the store-local and global bits; both key lists
+      hold the address; the bounds are the range from the base of the given length; the kept
+      permissions are filtered from the same six-element list, so they never include [Perm.Store]
+      either, and the load-mutable bit has no effect; the kept store-to labels follow
+      load-global; the cursor is the address. *)
   Definition mk_abstract_cap (c: cheriot_cap) : Cap :=
     let d := decompress_perm c.(permissions) in
     {|capSealed := if d.(EX)

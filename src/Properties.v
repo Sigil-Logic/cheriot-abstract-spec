@@ -899,9 +899,10 @@ End Configuration.
     the CHERIoT RTOS (the comment above names the entry points and the design), stated over the
     thread's registers, its stack and the trusted stack.  Each contract has the shape
     [Combinators.until]: from a precondition at entry, the thread stays in system mode under an
-    invariant until it is back in user mode with a postcondition.  Everything here is specified
-    and nothing is proved; the step relation does not refer to these definitions, and no proof
-    connects them to the switcher's code. *)
+    invariant until it is back in user mode with a postcondition, or stops in a state with no
+    successor; reaching user mode is not required (the liveness TODO).  Everything here is
+    specified and nothing is proved; the step relation does not refer to these definitions, and
+    no proof connects them to the switcher's code. *)
 Module SwitcherProperty.
   Import ListNotations.
   Import Configuration.
@@ -968,9 +969,11 @@ Module SwitcherProperty.
 
           (* Assumes Local and Store permissions are checked elsewhere *)
 
-          (** [mem] holds [v] at the slot at [authCap]'s cursor, within its bounds, through a
-              storing capability; a capability may be stored only if [authCap] has the capability
-              permission. The store-local check is left to the caller. *)
+          (** [mem] holds [v] at the slot at [authCap]'s cursor, through a storing capability,
+              with the range of [ISA_CAPSIZE_BYTES] addresses starting at the slot index
+              [toCapAddr] of the cursor, not at the cursor itself, tested against the bounds; a
+              capability may be stored only if [authCap] has the capability permission.  The
+              store-local check is left to the caller. *)
           Definition WriteStack (mem: FullMemory) (authCap: Cap) (v: CapOrBytes) :=
             (* Addresses are authorized. *)
             Subset (seq (toCapAddr (authCap.(capCursor))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
@@ -1249,7 +1252,7 @@ Module SwitcherProperty.
 
           (** What unwinding does to memory: from the stack base up to the spilled frame above
               the trusted CSP's cursor, every byte zeroed and tag cleared, within the trusted
-              CSP's bounds, and nothing else changed. *)
+              CSP's bounds, and no other byte or tag changed. *)
           Definition unwindStackOk
             (tcsp: Cap) (mem: FullMemory) (mem': FullMemory) :=
             exists baseAddr,
@@ -1266,8 +1269,9 @@ Module SwitcherProperty.
 
           (* Assumes auth cap is a valid CSP and checked elsewhere. *)
 
-          (** [mem] holds [v] at the slot at [authCap]'s cursor, within its bounds; the validity
-              of [authCap] as a CSP is checked elsewhere. *)
+          (** [mem] holds [v] at the slot at [authCap]'s cursor, with the bounds tested as in
+              [WriteStack] (from the slot index); the validity of [authCap] as a CSP is checked
+              elsewhere. *)
           Definition ReadStack (mem: FullMemory) (authCap: Cap) (v: CapOrBytes) :=
             Subset (seq (toCapAddr (authCap.(capCursor))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
             readCap mem (toCapAddr (authCap.(capCursor))) = v.
@@ -1492,8 +1496,10 @@ Module SwitcherProperty.
           Definition SPILL_FRAME_SIZE := (NREGS_TO_SPILL + 1) * ISA_CAPSIZE_BYTES.
 
           (** The register file handed to a stackful error handler: the return sentry, the
-              compartment's globals, the stack pointer below the spill frame (also as the first
-              argument), and the cause and trap value. *)
+              compartment's globals, a stack pointer whose cursor is [SPILL_FRAME_SIZE] minus the
+              untrusted cursor ([Nat.sub SPILL_FRAME_SIZE] applied to it, where the comments
+              intend the cursor lowered by the frame size; also as the first argument), and the
+              cause and trap value. *)
           Definition ExceptionEntry_PostRf_Stackful
             (csp: Cap)  (* untrusted csp at time of invocation *)
             (cgp: Cap)  (* pristine cgp *)
@@ -1567,8 +1573,12 @@ Module SwitcherProperty.
          
           (* Add a register save context right below the csp. *)
 
-          (** The spill frame below the untrusted CSP: the PCC (MEPCC) stored with its tag
-              cleared, the fifteen registers stored above it, and nothing else changed. *)
+          (** The spill frame below the untrusted CSP, as a relation between two memories: the
+              CSP is a valid untrusted stack capability, its cursor is replaced by
+              [SPILL_FRAME_SIZE] minus itself (the comments intend the cursor lowered by the
+              frame size), the second memory holds the PCC (MEPCC) with its tag cleared at that
+              cursor and the fifteen registers above it, and no other byte or tag differs between
+              the two. *)
           Definition spillRegisterFileForErrorHandlerOk 
             (csp: Cap) (rf: RegisterFile) (mepcc: Cap) (mem: FullMemory) (mem': FullMemory) :=
             (* Cap is on the stack and has store permissions. *)
@@ -1592,9 +1602,11 @@ Module SwitcherProperty.
             |}.
  
           (** A stackful handler is entered: the untrusted stack pointer was a capability, the
-              top frame's error counter is incremented, interrupts are enabled, the register file
-              is spilled below that stack pointer, the PCC is the handler's, and the register
-              file is [ExceptionEntry_PostRfSpec_Stackful]. *)
+              top frame's error counter is incremented, interrupts are enabled, the PCC is the
+              handler's, and the register file is [ExceptionEntry_PostRfSpec_Stackful].  The
+              spill predicate is required between the final memory and an existentially chosen
+              one, with the handler's register file, so it constrains the final memory only
+              through [NonStackMemPreserved] in [ExceptionEntry_Post]. *)
           Definition ExceptionEntry_Post_Stackful
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             exists exnInfo' frame frames compartment mem' csp,
@@ -1618,8 +1630,11 @@ Module SwitcherProperty.
 
           (* Note that this does not use the untrusted csp. *)
 
-          (** A stackless handler is entered: as the stackful case, but the memory is unchanged
-              and the register file is [ExceptionEntry_PostRfSpec_Stackless]. *)
+          (** A stackless handler is entered: the top frame's error counter is incremented,
+              interrupts are enabled, the PCC is the handler's, and the register file is
+              [ExceptionEntry_PostRfSpec_Stackless]; no untrusted stack pointer is required and
+              nothing is spilled.  The clause equating an otherwise unused existential memory
+              with the final one constrains nothing. *)
           Definition ExceptionEntry_Post_Stackless
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             exists exnInfo' frame frames compartment mem',
@@ -1636,7 +1651,8 @@ Module SwitcherProperty.
              (ExceptionEntry_PostRfSpec_Stackless frame compartment (sts st).(thread_exceptionInfo)) (rf st).
      
           (** Back in user mode, one of: a stackful handler, a stackless handler, a forced
-              unwind, or the thread dead; and nothing outside the thread's stack changed. *)
+              unwind, or the thread dead (which constrains only the liveness status); and no byte
+              or tag outside the thread's stack changed. *)
           Record ExceptionEntry_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             { EEPost_Mode: ~(InSystemMode st)
             ; EEPost_Cases: ExceptionEntry_Post_Stackful tid st_init st
@@ -1654,8 +1670,9 @@ Module SwitcherProperty.
            *)
 
           (** The contract: from the precondition, the thread stays in system mode under the
-              invariant until it is back in user mode with [ExceptionEntry_Post] (the TODO above
-              asks about liveness). *)
+              invariant until it is back in user mode with [ExceptionEntry_Post], or stops with
+              no successor; reaching user mode is not required (the TODO above asks about
+              liveness). *)
           Definition ExceptionHandlerOk :=
            forall tid init,
             ExceptionEntry_Pre tid init ->
@@ -1718,9 +1735,10 @@ Module SwitcherProperty.
           (*                              (readMemTagCapOk (mem st_init) (updateCapCursor cspCap (Nat.add (idx * ISA_CAPSIZE_BYTES))))) *)
           (*             (seq 1 NREGS_TO_SPILL). *)
 
-          (** Back in user mode by a forced unwind, or the thread dead; nothing outside the stack
-              changed.  The install-context case is commented out above with its open points; the
-              linked issue of the RTOS says why. *)
+          (** Back in user mode by a forced unwind, or the thread dead (the liveness status
+              only); no byte or tag outside the stack changed.  The install-context case is
+              commented out above with its open points; the comment inside cites an RTOS issue
+              proposing to decouple that path from the exception return. *)
           Record ExceptionReturn_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             { ERPost_Mode: ~(InSystemMode st)
             ; ERPost_Cases: 
@@ -1927,9 +1945,10 @@ Module SwitcherProperty.
 
           (* Trusted stack and interrupt status is not changed. *)
 
-          (** A call refused for lack of stack: the system state and the memory unchanged, the
-              PCC the caller's return address, the register file as it was except the two return
-              registers. *)
+          (** A call refused for lack of stack: the trusted stack, the liveness status, the
+              interrupt status and MEPCC unchanged, MTCC set to the configuration's, the
+              exception payload unconstrained; the memory unchanged; the PCC the caller's return
+              address; the register file as it was except the two return registers. *)
           Definition CCall_Post_NotEnoughStack
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             (exists exnInfo',
@@ -1950,7 +1969,8 @@ Module SwitcherProperty.
                    (fun idx v => RegP (rf st_init) idx (eq v)).
 
           (** Back in user mode, one of: the call succeeded, it was refused for lack of stack, a
-              forced unwind, or the thread dead; and nothing outside the thread's stack changed. *)
+              forced unwind, or the thread dead (the liveness status only); and no byte or tag
+              outside the thread's stack changed. *)
           Record CompartmentCall_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
           { CCPost_Mode: ~(InSystemMode st)
           ; CCPost_Cases: CCall_Post_Ok tid st_init st \/
@@ -1997,8 +2017,8 @@ Module SwitcherProperty.
           ; CRetReturn_Invariant: CompartmentCall_Invariant tid st st
           }.
 
-          (** Back in user mode by a normal unwind, or the thread dead; nothing outside the stack
-              changed. *)
+          (** Back in user mode by a normal unwind, or the thread dead (the liveness status
+              only); no byte or tag outside the stack changed. *)
           Record CompartmentReturn_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
           { CRetPost_Mode: ~(InSystemMode st)
           ; CRetPost_Cases: Post_UnwindStackReturnOk tid st_init st \/

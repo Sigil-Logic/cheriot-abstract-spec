@@ -19,13 +19,12 @@ From Stdlib Require Import String List Lia Bool Nat NArith.
 (** * Tactics
 
     Proof automation used throughout.  Nothing here is specific to the model: hypotheses are
-    learned once ([learn_hyp]), equalities simplified ([simplify_eq], [simplify_tuples],
-    [inv]), matches, products and disjunctions taken apart ([simpl_match], [case_match],
+    learned once ([learn_hyp]), equalities simplified ([simplify_eq], [simplify_tuples], [inv]),
+    matches, products and disjunctions taken apart ([simpl_match], [case_match],
     [destruct_products], [destruct_or]), conjunctions split ([split_and]), and goals closed
-    ([done], [by], [fast_done]).  [mark] records progress in a proof with a string. *)
+    ([done], [by], [fast_done]).  [mark] records progress in a proof by a [MkMark] hypothesis. *)
 
-(** Add [p] to the context under the name [H'], unless a hypothesis of its type is already
-    there. *)
+(** Add [p] to the context under the name [H'], unless a hypothesis of its type is already there. *)
 Tactic Notation "learn_hyp" constr(p) "as" ident(H') :=
   let P := type of p in
   match goal with
@@ -46,8 +45,8 @@ Proof.
   intros. inversion H. auto.
 Qed.
 
-(** Substitute every equation with a variable side, split pair equations, and close on
-    [False]. *)
+(** Substitute every equation one side of which is a variable that [subst] accepts, split pair
+    equations, and close on [False]. *)
 Tactic Notation "simplify_eq" := repeat
   match goal with
   | H : False |- _ => contradiction
@@ -110,8 +109,8 @@ Ltac destruct_matches_in e :=
       destruct e eqn:?
   end.
 
-(** The same on the innermost scrutinee of the type of [H], or on [H] itself when it has no
-    [match]. *)
+(** The same on the innermost scrutinee of the type of [H]; without a [match] it tries to
+    destruct the type of [H] itself, which fails unless that type is an inductive value. *)
 Ltac destruct_matches_in_hyp H :=
   lazymatch type of H with
   | context[match ?d with | _ => _ end] =>
@@ -235,7 +234,8 @@ Ltac assert_pre_and_specialize H :=
   | ?x -> _ => let Hx := fresh in assert x as Hx; [ | specialize H with (1 := Hx); clear Hx]
   end.
 
-(** Close the goal by rewriting with some hypothesis, then [congruence] or [auto]. *)
+(** Close the goal by rewriting with some hypothesis, then [congruence] if that closes it, then
+    [auto]; the first hypothesis that works is taken. *)
 Ltac rewrite_solve :=
   match goal with
   | [ H: _ |- _ ] => solve[rewrite H; try congruence; auto]
@@ -251,8 +251,8 @@ Ltac simplify_tuples :=
 (** [simplify_tuples], then substitute. *)
 Ltac simplify_tupless := simplify_tuples; subst.
 
-(** Case on every [match] in [H], simplify, split the pair equations, and close by
-    [congruence] where possible. *)
+(** Case on every [match] in [H], simplify [H], split the pair equations and substitute, and
+    close by [congruence] where possible. *)
 Ltac bash_destruct H :=
   repeat destruct_matches_in_hyp H; simpl in H; simplify_tupless; try congruence.
 
@@ -262,8 +262,8 @@ Ltac destruct_and_save H :=
   pose proof H as H';
   destruct H'.
 
-(** A marker type indexed by a string, so that [mark] can leave a named, otherwise inert
-    hypothesis in the context. *)
+(** A marker type indexed by a string, so that [mark], given [MkMark s], can leave a named,
+    otherwise inert hypothesis in the context. *)
 Inductive MARK : string -> Type :=
 | MkMark : forall s, MARK s.
 
