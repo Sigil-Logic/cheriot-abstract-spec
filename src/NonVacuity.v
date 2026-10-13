@@ -33,9 +33,12 @@
       them ([theoremInstance]); and one same-domain step the machine takes
       ([machine0_step]).
 
-    Every result here is closed under the global context ([Print Assumptions]); the only
-    parameter left open is the capability encoding, which nothing here exercises.  Nothing
-    here is imported by the proof files, and nothing in them changes. *)
+    Every result here is closed under the global context ([Print Assumptions]).  The
+    concrete results of [WitnessConfiguration] leave one parameter open, the capability
+    encoding, which nothing here exercises; the generic lemmas of [RegisterInstructions] and
+    [Untagged] also leave the instruction-set parameters and the byte and key types open, as
+    the proof files do.  Nothing here is imported by the proof files, and nothing in them
+    changes. *)
 
 From Stdlib Require Import List Lia Bool Nat PeanoNat.
 Set Primitive Projections.
@@ -67,15 +70,19 @@ End Lists.
     combinator [regInst] builds such an instruction from a function on the user thread
     state; [liftInst] lifts a normal instruction to a general one that leaves the system
     context alone.  [RegInstOk] is what remains to be shown of the function: it runs only
-    with an executable PCC, reaches no new capability, keeps the PCC executable, and
-    preserves the register count.  [regInst_WfGeneralInst] discharges [WfGeneralInst] from
-    it, once, for every such instruction. *)
+    with an executable PCC, reaches no new capability (in any memory, from the old PCC and
+    registers), keeps the PCC executable, and preserves the register count.
+    [regInst_WfGeneralInst] discharges [WfGeneralInst] from it, once, for every instruction
+    of the form [liftInst (regInst f)] with [RegInstOk f]; an instruction that writes the
+    system context, or whose new PCC needs an unsealing step, is outside that form. *)
 Section RegisterInstructions.
   Context [ISA: ISA_params].
   Context {machineTypeParams: MachineTypeParams}.
   Context {capEncodeDecode: CapEncodeDecode}.
 
-  (** Register [rd] of [rf] set to [v]; the other registers unchanged. *)
+  (** Register [rd] of [rf] set to [v] and the other registers unchanged, when [rd] is in
+      range; out of range, [v] is appended after the file instead, which [cmoveF] never
+      asks for, since it checks the index first. *)
   Definition setReg (rf: RegisterFile) (rd: nat) (v: CapOrBytes) : RegisterFile :=
     firstn rd rf ++ v :: skipn (S rd) rf.
 
@@ -255,7 +262,8 @@ Section RegisterInstructions.
       cbv [advancePCC updateCapCursor setCapCursor]; cbn; exact Hexec.
   Qed.
 
-  Definition nopInst : UserContext -> SystemContext -> Result ExnInfo (UserContext * SystemContext) :=
+  Definition nopInst
+    : UserContext -> SystemContext -> Result ExnInfo (UserContext * SystemContext) :=
     liftInst (regInst nopF).
 
   Lemma nopInst_wf : WfGeneralInst nopInst.
@@ -341,12 +349,13 @@ End Pairwise.
 (** ** Reachability in a memory without tags
 
     In a memory whose every tag is clear, [readCap] never yields a capability, so no
-    [LoadCap] step is possible; and from capabilities that hold no sealing or unsealing
-    key, no [Seal] or [Unseal] step is possible either.  What remains of [ReachableCap] is
-    the [Restrict] closure of the original set, which keeps every capability unsealed and
-    keyless, inside the addresses of one of the originals, and which does not depend on
-    the memory at all.  These two lemmas are what the configuration's well-formedness
-    rests on. *)
+    [LoadCap] step is possible; and from unsealed capabilities that hold no sealing or
+    unsealing key, no [Seal] or [Unseal] step is possible either.  Only [Refl] and
+    [StepRestrict] remain, and [RestrictUnsealed] keeps a capability unsealed, keyless and
+    inside the addresses it started from.  The first two lemmas state this as one
+    inclusion: every reachable capability has those properties, and is reachable in every
+    memory.  The third, [ReachableAddr_In], is the small fact about [ReachableAddr] the
+    footprint clause needs.  The configuration's well-formedness rests on all three. *)
 Section Untagged.
   Context [ISA: ISA_params].
   Context {machineTypeParams: MachineTypeParams}.
@@ -420,8 +429,9 @@ End Untagged.
 
     Sixteen registers and eight-byte capabilities (CHERIoT's RV32E base and 64-bit
     capabilities); bytes and keys are natural numbers.  The capability encoding stays a
-    parameter: no tagged memory is ever read, so no encoding is ever exercised, and the
-    results hold for every encoding. *)
+    section parameter with no law attached to it, as in the proof files, so every result
+    below holds for every encoding; and the witness never reads a tagged slot, so no
+    encoding is exercised in the lemmas or in the one step. *)
 Instance witnessISA : ISA_params := {| ISA_LG_CAPSIZE_BYTES := 3; ISA_NREGS := 16 |}.
 Instance witnessMTP : MachineTypeParams := {| Byte := nat; Key := nat |}.
 
@@ -435,9 +445,11 @@ Section WitnessConfiguration.
 
       Three disjoint regions: code at 0 to 63, the export table at 64 to 71, the stack at
       128 to 191.  One compartment, which is the switcher, holding only its code
-      capability.  One thread, starting at the code's base, with registers holding bytes,
-      a stack capability over the stack region, one trusted-stack frame naming the single
-      export entry, and the configuration's trap capability.  No tag is set anywhere. *)
+      capability.  One thread, starting at the code's base, each of its sixteen registers
+      holding the empty byte string; its metadata and its one trusted-stack frame carry a
+      stack capability over the stack region, the frame names the single export entry,
+      and the thread holds the configuration's trap capability.  No tag is set
+      anywhere. *)
   Definition codePCC : Cap := mkUnsealedPCC (seq 0 64) 0.
 
   Definition exportTableCap : Cap :=
@@ -512,7 +524,8 @@ Section WitnessConfiguration.
        machine_curThreadId := 0 |}.
 
   (** The export-table lookup: a capability inside compartment 0's export table denotes
-      its first export entry.  Well formed in the sense the properties file states. *)
+      its first export entry.  Well-formed in the sense [WFLookupExportTableCompartmentId]
+      states. *)
   Definition lookup0 (config: Config) (cap: Cap) : option (nat * nat) :=
     match nth_error config.(configCompartments) 0 with
     | Some c =>
@@ -613,7 +626,8 @@ Section WitnessConfiguration.
     - apply validCSP0.
   Qed.
 
-  Lemma valid_machine0 : @ThreadIsolatedMonotonicity.ValidInitialMachine _ _ _ lookup0 config0 machine0.
+  Lemma valid_machine0 :
+    @ThreadIsolatedMonotonicity.ValidInitialMachine _ _ _ lookup0 config0 machine0.
   Proof.
     split.
     - constructor.
@@ -626,11 +640,12 @@ Section WitnessConfiguration.
 
   (** *** The theorem, instantiated
 
-      With a fetch of four bytes at the cursor and a decoder that returns the no-op for
-      every byte string, the theorem's three hypotheses are met, and its conclusion is a
-      closed statement about this machine. *)
+      With a fetch function that returns the four addresses at the cursor and a decoder
+      that returns the no-op for every byte string, the theorem's three hypotheses are met;
+      its conclusion is then a statement about this machine, for every encoding. *)
   Definition fetch0 (mem: FullMemory) (a: Addr) : list Addr := seq a 4.
-  Definition decode0 (bytes: list Byte) : @Inst _ _ capEncodeDecode := @Inst_nop _ _ capEncodeDecode.
+  Definition decode0 (bytes: list Byte) : @Inst _ _ capEncodeDecode :=
+    @Inst_nop _ _ capEncodeDecode.
   Definition exn0 : EXNInfo := [].
 
   Definition theoremInstance :=
@@ -641,9 +656,12 @@ Section WitnessConfiguration.
 
       The machine is not stuck at its initial state: the fetch at the PCC's cursor is in
       bounds, the decoder returns the no-op, and the no-op succeeds, so the machine takes
-      one [MachineStep] to the state with the PCC advanced, and the event is a
-      same-domain one ([Ev_SameThread 0 Ev_General]).  The theorem's conclusion is
-      therefore exercised on a non-empty same-domain trace, not only on the empty one. *)
+      one [MachineStep] to the state with the PCC advanced ([machine0_step]), and the
+      event is a same-domain one ([Ev_SameThread 0 Ev_General]).  [always_step] draws, from
+      any [Combinators.always] proof, the property at a state one step from the initial
+      one; [property_after_one_step] applies it to [theoremInstance] and [machine0_step],
+      so the theorem's conclusion is obtained at a reachable state whose trace is
+      non-empty and same-domain, not only at the initial state. *)
   Definition thread1 : Thread :=
     {| thread_userState := {| thread_rf := rf0; thread_pcc := advancePCC codePCC |};
        thread_systemState := thread0.(thread_systemState) |}.
@@ -669,5 +687,21 @@ Section WitnessConfiguration.
       split; [intros a Ha; apply in_seq in Ha; apply in_seq; lia|].
       split; [apply in_seq; lia|].
       split; [reflexivity | left; reflexivity].
+  Qed.
+
+  (** From an [always] proof, the property one step away: the invariant holds initially,
+      is preserved by the step, and implies the property. *)
+  Lemma always_step :
+    forall (State: Type) (step: State -> State -> Prop) (P: State -> Prop) s t,
+      Combinators.always step P s -> step s t -> P t.
+  Proof.
+    intros * H Hst. destruct H as [inv est pres use]. apply use. eapply pres; eauto.
+  Qed.
+
+  Lemma property_after_one_step :
+    ThreadIsolatedMonotonicity.PThreadIsolatedMonotonicity machine0
+      (machine1, [Ev_SameThread 0 Ev_General]).
+  Proof.
+    eapply always_step; [exact theoremInstance | exact machine0_step].
   Qed.
 End WitnessConfiguration.
