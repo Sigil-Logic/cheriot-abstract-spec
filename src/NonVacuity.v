@@ -26,12 +26,13 @@
     - [RegisterInstructions]: two concrete general instructions, a no-op and a register
       move, each with [WfGeneralInst] proved, so the instruction type [Inst] is inhabited
       by a general instruction;
-    - [Untagged]: what [ReachableCap] reduces to in a memory without tags, from
+    - [Untagged]: what [ReachableCap] reduces to in a memory without tags, from unsealed
       capabilities without keys, which is what the configuration's well-formedness rests on;
     - [WitnessConfiguration]: a one-compartment, one-thread configuration and its initial
       machine, with [WFConfig] and [ValidInitialMachine] proved; the theorem applied to
-      them ([theoremInstance]); and one same-domain step the machine takes
-      ([machine0_step]).
+      them ([theoremInstance]); one same-domain step the machine takes ([machine0_step]);
+      and the theorem's property at the state that step reaches
+      ([monotonic_after_one_step]).
 
     Every result here is closed under the global context ([Print Assumptions]).  The
     concrete results of [WitnessConfiguration] leave one parameter open, the capability
@@ -70,11 +71,12 @@ End Lists.
     combinator [regInst] builds such an instruction from a function on the user thread
     state; [liftInst] lifts a normal instruction to a general one that leaves the system
     context alone.  [RegInstOk] is what remains to be shown of the function: it runs only
-    with an executable PCC, reaches no new capability (in any memory, from the old PCC and
-    registers), keeps the PCC executable, and preserves the register count.
-    [regInst_WfGeneralInst] discharges [WfGeneralInst] from it, once, for every instruction
-    of the form [liftInst (regInst f)] with [RegInstOk f]; an instruction that writes the
-    system context, or whose new PCC needs an unsealing step, is outside that form. *)
+    with an executable PCC, produces only capabilities reachable from those it was given
+    (in any memory, from the old PCC and registers), keeps the PCC executable, and
+    preserves the register count.  [regInst_WfGeneralInst] discharges [WfGeneralInst] from
+    it, once, for every instruction of the form [liftInst (regInst f)] with [RegInstOk f];
+    an instruction that writes the system context, or whose new PCC is not reachable from
+    the old capabilities, is outside that form. *)
 Section RegisterInstructions.
   Context [ISA: ISA_params].
   Context {machineTypeParams: MachineTypeParams}.
@@ -228,8 +230,8 @@ Section RegisterInstructions.
     split; [exact Hexec' | exact Hrf'].
   Qed.
 
-  (** The general result: every register-only instruction whose function is [RegInstOk]
-      is a well-formed general instruction. *)
+  (** The general result: every instruction of the form [liftInst (regInst f)] with
+      [RegInstOk f] is a well-formed general instruction. *)
   Lemma regInst_WfGeneralInst : forall f, RegInstOk f -> WfGeneralInst (liftInst (regInst f)).
   Proof.
     intros f Hf. unfold WfGeneralInst. split.
@@ -352,10 +354,11 @@ End Pairwise.
     [LoadCap] step is possible; and from unsealed capabilities that hold no sealing or
     unsealing key, no [Seal] or [Unseal] step is possible either.  Only [Refl] and
     [StepRestrict] remain, and [RestrictUnsealed] keeps a capability unsealed, keyless and
-    inside the addresses it started from.  The first two lemmas state this as one
-    inclusion: every reachable capability has those properties, and is reachable in every
-    memory.  The third, [ReachableAddr_In], is the small fact about [ReachableAddr] the
-    footprint clause needs.  The configuration's well-formedness rests on all three. *)
+    inside the addresses it started from.  The first two lemmas state this: every reachable
+    capability is unsealed and keyless with its addresses inside an original's, and it is
+    reachable in every memory.  The third, [ReachableAddr_In], is the small fact about
+    [ReachableAddr] the footprint clause needs.  The configuration's well-formedness rests
+    on all three. *)
 Section Untagged.
   Context [ISA: ISA_params].
   Context {machineTypeParams: MachineTypeParams}.
@@ -640,9 +643,13 @@ Section WitnessConfiguration.
 
   (** *** The theorem, instantiated
 
-      With a fetch function that returns the four addresses at the cursor and a decoder
-      that returns the no-op for every byte string, the theorem's three hypotheses are met;
-      its conclusion is then a statement about this machine, for every encoding. *)
+      [wf_config0] and [valid_machine0] discharge the first two hypotheses, which do not
+      depend on the fetch function or the decoder.  The third, [WfGeneralInst], enters
+      through the decoder: [decode0] returns the no-op, with its proof, for every byte
+      string; [fetch0] returns the four addresses at the cursor.  With those two parameters
+      fixed, the theorem's conclusion is a statement about a machine that steps, for every
+      encoding.  [lookup0_wf] is shown for completeness; the lookup's well-formedness is
+      not a hypothesis of the theorem. *)
   Definition fetch0 (mem: FullMemory) (a: Addr) : list Addr := seq a 4.
   Definition decode0 (bytes: list Byte) : @Inst _ _ capEncodeDecode :=
     @Inst_nop _ _ capEncodeDecode.
@@ -660,8 +667,11 @@ Section WitnessConfiguration.
       event is a same-domain one ([Ev_SameThread 0 Ev_General]).  [always_step] draws, from
       any [Combinators.always] proof, the property at a state one step from the initial
       one; [property_after_one_step] applies it to [theoremInstance] and [machine0_step],
-      so the theorem's conclusion is obtained at a reachable state whose trace is
-      non-empty and same-domain, not only at the initial state. *)
+      giving [PThreadIsolatedMonotonicity machine0] at that state, which is the implication
+      from the trace being same-domain; [trace1_same_domain] discharges the premise, and
+      [monotonic_after_one_step] is the consequent, [IsolatedMonotonicity machine0
+      machine1]: the theorem's property proper, at a reachable state whose trace is
+      non-empty, not only at the initial state. *)
   Definition thread1 : Thread :=
     {| thread_userState := {| thread_rf := rf0; thread_pcc := advancePCC codePCC |};
        thread_systemState := thread0.(thread_systemState) |}.
@@ -704,4 +714,12 @@ Section WitnessConfiguration.
   Proof.
     eapply always_step; [exact theoremInstance | exact machine0_step].
   Qed.
+
+  Lemma trace1_same_domain :
+    ThreadIsolatedMonotonicity.SameDomainTrace [Ev_SameThread 0 Ev_General].
+  Proof. constructor; [exact I | constructor]. Qed.
+
+  Lemma monotonic_after_one_step :
+    ThreadIsolatedMonotonicity.IsolatedMonotonicity machine0 machine1.
+  Proof. exact (property_after_one_step trace1_same_domain). Qed.
 End WitnessConfiguration.
