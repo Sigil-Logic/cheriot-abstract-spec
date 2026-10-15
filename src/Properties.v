@@ -392,6 +392,7 @@ Module Configuration.
     (* Memory is equivalent at an addr if the byte is the same and
     the tag corresponding to the address is the same. *)
 
+    (** Two memories agree on the byte at [addr] and on the tag of its slot. *)
     Definition MemEquivalentAtAddr (mem1 mem2: FullMemory) (addr: Addr) :=
       readByte mem1 addr = readByte mem2 addr /\
         (readTag mem1 (toCapAddr addr) = readTag mem2 (toCapAddr addr)).
@@ -891,11 +892,24 @@ End Configuration.
      area used in context switching should be viewed as atomic
      steps, with interrupts disabled.
  *)
+
+(** * The switcher's contracts
+
+    Pre- and postconditions of the switcher's entry points, intended to describe the switcher of
+    the CHERIoT RTOS (the comment above names the entry points and the design), stated over the
+    thread's registers, its stack and the trusted stack.  Each contract has the shape
+    [Combinators.until]: from a precondition at entry, the thread stays in system mode under an
+    invariant until it is back in user mode with a postcondition, or stops in a state with no
+    successor; reaching user mode is not required (the liveness TODO).  Everything here is
+    specified and nothing is proved; the step relation does not refer to these definitions, and
+    no proof connects them to the switcher's code. *)
 Module SwitcherProperty.
   Import ListNotations.
   Import Configuration.
   Import Separation.
 
+  (** The parameters of the model, the export-table lookup and the decoder, bound for the module;
+      [ThreadState] is a thread's user and system contexts together. *)
   Section WithContext.
     Context [ISA: ISA_params].
     Context {machineTypeParams: MachineTypeParams}.
@@ -917,9 +931,15 @@ Module SwitcherProperty.
     Abbreviation ThreadStep := (ThreadStep fetchAddrs decode pccNotInBounds).
     Abbreviation ThreadState := (UserContext * SystemContext)%type.
     Abbreviation ValidTrustedStack := (ValidTrustedStack LookupExportTableCompartmentId).
+
+    (** Register-file specifications and the stack accesses the contracts are written with. *)
     Section Utils.
       (* Notation to specfy properties of register files. *)
+
+      (** A register-file specification: register indices with the property each must satisfy. *)
       Definition RfSpecT : Type := list (nat * (CapOrBytes -> Prop)).
+
+      (** Register [idx] of [rf] exists and satisfies [P]. *)
       Definition RegP (rf: RegisterFile) (idx : nat) (P: CapOrBytes -> Prop) :=
         exists v, nth_error rf idx = Some v /\ P v.
 
@@ -928,6 +948,9 @@ Module SwitcherProperty.
          - All registers listed in the spec satisfy the listed property.
          - All other registers satisfy the default property.
        *)
+
+      (** [rf] is valid, every register the specification lists satisfies its property, and every
+          other register satisfies [default]. *)
       Record RfSpec (spec: RfSpecT) (rf: RegisterFile) (default: nat -> CapOrBytes -> Prop) : Prop :=
         { RfSpec_ValidRF: ValidRf rf
         ; RfSpec_props : forall idx p, In (idx, p) spec -> RegP rf idx p
@@ -936,12 +959,21 @@ Module SwitcherProperty.
                                     RegP rf idx (default idx)
         }.
 
+          (** An unsealed capability that may store local capabilities: what the contracts
+              require of a stack capability taken from an untrusted register (the TODO inside
+              questions the label). *)
           Definition ValidUntrustedCSP (cap: Cap) :=
             (* Has SL permissions -- TODO: should SL not have NonLocal? *)
             In Local cap.(capCanStore) /\
             cap.(capSealed) = None.
 
           (* Assumes Local and Store permissions are checked elsewhere *)
+
+          (** [mem] holds [v] at the slot at [authCap]'s cursor, through a storing capability,
+              with the range of [ISA_CAPSIZE_BYTES] addresses starting at the slot index
+              [toCapAddr] of the cursor, not at the cursor itself, tested against the bounds; a
+              capability may be stored only if [authCap] has the capability permission.  The
+              store-local check is left to the caller. *)
           Definition WriteStack (mem: FullMemory) (authCap: Cap) (v: CapOrBytes) :=
             (* Addresses are authorized. *)
             Subset (seq (toCapAddr (authCap.(capCursor))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
@@ -952,6 +984,10 @@ Module SwitcherProperty.
             In Perm.Store authCap.(capPerms).
 
          (* Relaxing and allowing tags to be dropped here. *)
+
+          (** [res] is what a load through the unsealed, loading [authCap] at its cursor yields:
+              the attenuated capability if [authCap] has the capability permission, its bytes
+              otherwise, or the bytes stored there. *)
           Definition readMemTagCapOk (mem: FullMemory) (authCap: Cap) (res: CapOrBytes) : Prop :=
             authCap.(capSealed) = None /\
             In Perm.Load authCap.(capPerms) /\ 
@@ -968,40 +1004,61 @@ Module SwitcherProperty.
 
     End Utils.
     
+    (** A well-formed configuration, fixed. *)
     Section WithConfig.
       Variable config: Config.
       Variable (pf_wf_config: WFConfig config).
       Abbreviation MTCC := (MTCC config).
 
+      (** The switcher's compartment-call entry point, as an unsealed PCC over the switcher's
+          footprint. *)
       Definition CompartmentCallPCC : Cap :=
         mkUnsealedPCC (switcherFootprint config)
           config.(configSwitcher).(Switcher_AddrOf_compartment_switcher_entry).
+
+      (** The return point after a compartment call, likewise. *)
       Definition CompartmentReturnPCC : Cap :=
         mkUnsealedPCC (switcherFootprint config)
           config.(configSwitcher).(Switcher_AddrOf_switcher_after_compartment_call).
+
+      (** The return point after an error handler, likewise. *)
       Definition ErrorHandlerReturnPCC : Cap :=
         mkUnsealedPCC (switcherFootprint config)
           config.(configSwitcher).(Switcher_AddrOf_error_handler_return). 
 
       (* TODO: move these under Configuration and prove they are inductively preserved. *)
+
+      (** For a thread in user mode: the configuration's MTCC and a valid trusted stack.  As
+          written, the first field compares the thread's MEPCC, not its MTCC, with [MTCC].
+          Stated here with the note above that they belong under [Configuration] and are not yet
+          proved preserved. *)
       Record UserModeInvariants (meta: InitialThreadMetadata) (t: Thread) : Prop :=
       { UserInv_MTCC : t.(thread_systemState).(thread_mepcc) = MTCC
       ; UserInv_TrustedStack : ValidTrustedStack config t.(thread_systemState).(thread_trustedStack)
       }.    
       
+      (** A valid register file, and [UserModeInvariants] when the thread is not in system mode:
+          the stronger per-thread invariant the switcher contracts assume. *)
       Record ThreadInv' (meta: InitialThreadMetadata) (t: Thread) : Prop :=
       { Inv_validRf : ValidRf t.(thread_userState).(thread_rf)
       ; Inv_userMode: ~(ThreadInSystemMode t) -> UserModeInvariants meta t
       }.                                                                    
 
+      (** The memory invariants and [ThreadInv'] for every thread: the stronger global invariant
+          the switcher contracts assume, not proved preserved. *)
       Record GlobalInvariants (m: Machine) : Prop :=
       { Inv_Mem: GlobalMemInvariants config m.(machine_memory)
       ; Inv_Threads: Forall2 ThreadInv' config.(configThreads) m.(machine_threads)
       }.
 
+      (** The switcher's register conventions and layout parameters. *)
       Section WithSwitcherParams.
         (* TODO: consider generalizing into e.g. argument registers,
         caller/callee-saved registers, return registers, etc. *)
+
+        (** The register indices the switcher's convention names: return address, globals, stack
+            and thread pointers, temporaries, callee-saved and argument registers (the TODO above
+            suggests generalizing). *)
         Record ConcreteRf :=
           { rf_ra : nat;
             rf_gp : nat;
@@ -1020,9 +1077,15 @@ Module SwitcherProperty.
             rf_a5 : nat;
           }.
 
+        (** The register that carries the sealed export-table entry on a compartment call. *)
         Definition SWITCHER_SEALED_ARG_REG := rf_t1.
 
         (* TODO: constrain spill slot appropriately, or generalize. *)
+
+        (** What the contracts take from the switcher: the four spill-slot indices, the reserved
+            stack space on a call, the zero byte, the two failure return values, the decoding of
+            an exception payload into [mcause] and [mtval], and the cursor of a capability stored
+            as bytes. *)
         Class SWITCHER_PARAMS (rf: ConcreteRf) :=
           { SPILL_SLOT_cs0 : nat; (* < 4 *)
             SPILL_SLOT_cs1 : nat; (* < 4 *)
@@ -1035,12 +1098,17 @@ Module SwitcherProperty.
             exnDecode: ExnInfo -> (Bytes * Bytes) (* mcause * mtval *);
             capCursorOfBytes: Bytes -> Addr
           }.
+
+        (** The size of the four spilled registers' frame. *)
         Definition SPILL_SLOT_SIZE := 4 * ISA_CAPSIZE_BYTES. 
 
         (* NB: this could be left abstract, as long as we take care to
            zero areas of the stack on cross-compartment paths. But for
            clarity, we make this concrete for now.
          *)
+
+        (** The RISC-V indices of the named registers, made concrete (the comment above says it
+            could stay abstract). *)
         Definition rfidx :=
           {| rf_ra := 1; 
              rf_gp := 2;
@@ -1061,8 +1129,12 @@ Module SwitcherProperty.
 
         (* Context {rfidx: ConcreteRf}. *)
         Context {switcher: SWITCHER_PARAMS rfidx}.
+
+        (** A capability-sized run of zero bytes. *)
         Definition zeroBytes : list Byte :=
           map (fun _ => zeroByte) (seq 0 ISA_CAPSIZE_BYTES). 
+
+        (** The cursor of a register value, whether a capability or its bytes. *)
         Definition capCursorOfCapOrBytes (v: CapOrBytes) := 
           match v with
           | inl cap => cap.(capCursor)
@@ -1070,16 +1142,26 @@ Module SwitcherProperty.
           end.
 
 
+        (** The trap value of an exception payload. *)
         Definition mtval exnInfo := snd (exnDecode exnInfo).
+
+        (** The cause of an exception payload. *)
         Definition mcause exnInfo := fst (exnDecode exnInfo).
 
         (* The error handler returns a IRQ-enabling reverse sentry to
            the error handler return address of the switcher. *)
+
+        (** The interrupt-enabling backward sentry to the error-handler return point, handed to
+            an error handler in its return-address register. *)
         Definition errorHandlerReturnCap : Cap :=
           setCapSealed ErrorHandlerReturnPCC (Some (inl RetEnableInterrupt)).
 
         (* After a compartment call, the switcher returns a backwards
            sentry to .Lswitcher_after_compartment_call. *)
+
+        (** The backward sentry to the return point after a compartment call, enabling or
+            disabling interrupts as [istatus] says, handed to the callee in its return-address
+            register. *)
         Definition switcherAfterCompartmentCallCap (istatus: InterruptStatus): Cap :=
           let sentry := match istatus with
                         | InterruptsEnabled => RetEnableInterrupt
@@ -1093,6 +1175,10 @@ Module SwitcherProperty.
            handling path of the switcher, as MEPCC is clobbed along
            this path.
          *)
+
+        (** What holds while the thread is inside the switcher: system mode, a PCC within the
+            switcher's footprint, and a fetch that succeeds (assumed, since MEPCC is clobbered on
+            the exception path). *)
         Record In_Switcher_Invariant
           (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
         { EE_Inv_Mode: InSystemMode st
@@ -1111,14 +1197,23 @@ Module SwitcherProperty.
            memory). Alternatively, we could special case the
            scheduler.
          *)
+
+        (** The memories the switcher's behavior may depend on are equivalent: the same thread
+            stack, and the switcher's code and the export tables unchanged in [mem2] (the TODO
+            above notes that the scheduler lies outside the switcher's code). *)
         Definition SwitcherMemEquivAtThread (tid: nat) (mem1 mem2: FullMemory) : Prop :=
           MemEquivalentAtThread config tid mem1 mem2 /\
           SwitcherCodeUnchanged config mem2 /\
           ExportTablesUnchanged config mem2.
 
+        (** Some thread step leads from [st1] to [st2]: the step relation the contracts are
+            stated over. *)
         Definition ThreadStepOk st1 st2 :=
           exists ev, ThreadStep st1 (st2, ev).
 
+        (** Popping the top trusted-stack frame and returning to the caller below it: the shared
+            postcondition of a forced unwind and of a compartment return, over the spilled
+            registers, the trusted stack and the zeroed stack. *)
         Section UnwindingStack.
           (* Pop off the top stack frame and return to the previous
            * caller. This is only possible if there is at least one stack fram left.
@@ -1131,12 +1226,16 @@ Module SwitcherProperty.
            * - zeroes the stack
            *)
           (* The lowest address. *)
+
+          (** [addr] is the lowest address of [c]'s bounds. *)
           Definition BaseAddr (c: Cap) (addr: Addr) : Prop := 
             In addr c.(capAddrs) /\
             (forall a', In a' c.(capAddrs) -> addr <= a').
 
           (* All addresses from base (inclusive) to top (noninclusive)
           along with their associated tags are zeroed/invalidated. *)
+
+          (** Every byte from [base] below [top] is zero and its tag clear in [mem]. *)
           Definition zeroedStack (base top: Addr) (mem: FullMemory) :=
             (forall addr, base <= addr < top ->
                      readByte mem addr = zeroByte /\
@@ -1150,6 +1249,10 @@ Module SwitcherProperty.
              To unwind the stack, we must zero the stack memory from
              stack base to tcsp + SPILL_SLOT_SIZE.
            *)
+
+          (** What unwinding does to memory: from the stack base up to the spilled frame above
+              the trusted CSP's cursor, every byte zeroed and tag cleared, within the trusted
+              CSP's bounds, and no other byte or tag changed. *)
           Definition unwindStackOk
             (tcsp: Cap) (mem: FullMemory) (mem': FullMemory) :=
             exists baseAddr,
@@ -1165,10 +1268,17 @@ Module SwitcherProperty.
                      readTag mem' (toCapAddr addr) = readTag mem (toCapAddr addr)).
 
           (* Assumes auth cap is a valid CSP and checked elsewhere. *)
+
+          (** [mem] holds [v] at the slot at [authCap]'s cursor, with the bounds tested as in
+              [WriteStack] (from the slot index); the validity of [authCap] as a CSP is checked
+              elsewhere. *)
           Definition ReadStack (mem: FullMemory) (authCap: Cap) (v: CapOrBytes) :=
             Subset (seq (toCapAddr (authCap.(capCursor))) ISA_CAPSIZE_BYTES) authCap.(capAddrs) /\
             readCap mem (toCapAddr (authCap.(capCursor))) = v.
 
+          (** The register file after unwinding: the return address, globals and callee-saved
+              registers restored from the spilled frame, the stack pointer restored above it, and
+              the two return registers as given. *)
           Definition PostRf_UnwindStack
             (tcsp: Cap) (* Topmost trusted stack frame's csp *)
             (init_mem: FullMemory)
@@ -1189,6 +1299,7 @@ Module SwitcherProperty.
             ; (rf_a1 rfidx, ret1)
             ].
   
+          (** [PostRf_UnwindStack] for the top frame's CSP, every other register zero. *)
           Definition PostRfSpec_UnwindStack
             (frame: TrustedStackFrame)
             (init_mem: FullMemory)
@@ -1222,6 +1333,11 @@ Module SwitcherProperty.
            * TODO: check interrupt status 
            * TODO: CSR_MSHWM 
            *)
+
+          (** The unwinding postcondition, parametric in what the two return registers hold: at
+              least two frames, the top one popped, MTCC restored, MEPCC set to the new PCC (to
+              be relaxed), the stack zeroed by [unwindStackOk], the PCC restored from the spilled
+              frame, and the register file as [PostRfSpec_UnwindStack]. *)
           Definition Post_UnwindStackBase
             (ret0: RegisterFile -> CapOrBytes -> Prop)
             (ret1: RegisterFile -> CapOrBytes -> Prop)
@@ -1249,6 +1365,9 @@ Module SwitcherProperty.
               ).
 
           (* Return compartmentFailValue for a forced unwind. *)
+
+          (** A forced unwind: the first return register holds the compartment-failure value, the
+              second zero. *)
           Definition Post_UnwindStackForced
             (tid: nat) (st_init: ThreadState) (st: ThreadState) :=
             Post_UnwindStackBase
@@ -1256,6 +1375,7 @@ Module SwitcherProperty.
               (fun rf_init => eq (inr zeroBytes))
               tid st_init st.
 
+          (** A normal return: the two return registers keep their values. *)
           Definition Post_UnwindStackReturnOk
             (tid: nat) (st_init: ThreadState) (st: ThreadState) :=
             Post_UnwindStackBase
@@ -1263,12 +1383,17 @@ Module SwitcherProperty.
               (fun rf_init v => RegP rf_init (rf_a1 rfidx) (eq v))
               tid st_init st.
 
+          (** The thread has exited. *)
           Definition ThreadDead (st: ThreadState) :=
             (sts st).(thread_alive) = ThreadDead.
 
           (* Switcher invariant should hold for any memory that is
            * equivalent to st_init at the thread's stack + switcher + export-table regions.
            *)
+
+          (** The invariant every contract keeps while in the switcher: [In_Switcher_Invariant]
+              for any memory equivalent to the entry memory on the thread's stack, the switcher's
+              code and the export tables. *)
           Definition SwitcherEntry_Invariant
             (tid: nat) (st_init: ThreadState) (st: ThreadState) :=
             forall mem',
@@ -1277,7 +1402,11 @@ Module SwitcherProperty.
 
         End UnwindingStack.
 
+        (** The exception entry point: from a trap into the switcher to an error handler, a
+            forced unwind, or the thread's exit. *)
         Section ExceptionHandler.
+
+          (** [SwitcherEntry_Invariant]. *)
           Definition ExceptionEntry_Invariant
             (tid: nat) (st_init: ThreadState) (st: ThreadState) :=
             SwitcherEntry_Invariant tid st_init st.
@@ -1287,6 +1416,9 @@ Module SwitcherProperty.
              and the invariant should hold, for any memory that is
              equivalent at stack+switcher addresses.
            *)
+
+          (** At entry: the PCC is the configuration's MTCC, the trusted stack is valid, and the
+              invariant holds. *)
           Record ExceptionEntry_Pre (tid: nat) (st: ThreadState) : Prop :=
             { EEPre_PCCAddr: pcc st = MTCC
             ; EEPre_TrustedStack: ValidTrustedStack config (sts st).(thread_trustedStack)
@@ -1356,10 +1488,18 @@ Module SwitcherProperty.
                 - Exit the thread? TODO.
            *)
 
+          (** The registers an error handler's spill frame holds. *)
           Definition NREGS_TO_SPILL := 15.
           (* registers + PCC *)
+
+          (** The spill frame: the registers and the PCC. *)
           Definition SPILL_FRAME_SIZE := (NREGS_TO_SPILL + 1) * ISA_CAPSIZE_BYTES.
 
+          (** The register file handed to a stackful error handler: the return sentry, the
+              compartment's globals, a stack pointer whose cursor is [SPILL_FRAME_SIZE] minus the
+              untrusted cursor ([Nat.sub SPILL_FRAME_SIZE] applied to it, where the comments
+              intend the cursor lowered by the frame size; also as the first argument), and the
+              cause and trap value. *)
           Definition ExceptionEntry_PostRf_Stackful
             (csp: Cap)  (* untrusted csp at time of invocation *)
             (cgp: Cap)  (* pristine cgp *)
@@ -1375,6 +1515,8 @@ Module SwitcherProperty.
               ; (rf_a2 rfidx, eq (inr (mtval  exnInfo)))
             ].
   
+          (** [ExceptionEntry_PostRf_Stackful] with the compartment's CGP, every other register
+              zero. *)
           Definition ExceptionEntry_PostRfSpec_Stackful
             (csp: Cap)
             (compartment: Compartment)
@@ -1384,6 +1526,8 @@ Module SwitcherProperty.
             RfSpec (ExceptionEntry_PostRf_Stackful csp cgp exnInfo) rf
                    (fun _ => eq (inr zeroBytes)).
   
+          (** The register file handed to a stackless error handler: the return sentry, the
+              globals, a stack pointer, and the cause and trap value as the two arguments. *)
           Definition ExceptionEntry_PostRf_Stackless
             (csp: Cap) (* derived from tcsp *)
             (cgp: Cap)  (* pristine cgp *)
@@ -1397,6 +1541,9 @@ Module SwitcherProperty.
               (* a2 and other regs are zero *)
             ].
 
+          (** [ExceptionEntry_PostRf_Stackless] with the compartment's CGP and the trusted CSP as
+              the stack pointer, every other register zero.  The [newCSP] built here, restricted
+              below the trusted cursor and rebased, is not the one passed. *)
           Definition ExceptionEntry_PostRfSpec_Stackless
             (frame: TrustedStackFrame)                      
             (compartment: Compartment)
@@ -1415,6 +1562,9 @@ Module SwitcherProperty.
                    (fun _ => eq (inr zeroBytes)).
 
           (* Error handler PCCs are created by incrementing the compartment's PCC by an offset. *)
+
+          (** [pcc] is the compartment's PCC moved to the offset of one of its error handlers of
+              the given kind. *)
           Definition ValidErrorHandlerPCC (handlerT: handlerType) (compartment: Compartment) (pcc: Cap) : Prop :=
             exists offset,
               In (Build_ErrorHandler offset handlerT) compartment.(compartmentErrorHandlers) /\
@@ -1422,6 +1572,13 @@ Module SwitcherProperty.
 
          
           (* Add a register save context right below the csp. *)
+
+          (** The spill frame below the untrusted CSP, as a relation between two memories: the
+              CSP is a valid untrusted stack capability, its cursor is replaced by
+              [SPILL_FRAME_SIZE] minus itself (the comments intend the cursor lowered by the
+              frame size), the second memory holds the PCC (MEPCC) with its tag cleared at that
+              cursor and the fifteen registers above it, and no other byte or tag differs between
+              the two. *)
           Definition spillRegisterFileForErrorHandlerOk 
             (csp: Cap) (rf: RegisterFile) (mepcc: Cap) (mem: FullMemory) (mem': FullMemory) :=
             (* Cap is on the stack and has store permissions. *)
@@ -1437,12 +1594,19 @@ Module SwitcherProperty.
                      readByte mem' addr = readByte mem addr /\
                      readTag mem' (toCapAddr addr) = readTag mem (toCapAddr addr)).
          
+          (** The frame with its error counter incremented. *)
           Definition increment_errorCounter (f: TrustedStackFrame) :=
             {| trustedStackFrame_CSP := f.(trustedStackFrame_CSP);
                trustedStackFrame_calleeExportTable := f.(trustedStackFrame_calleeExportTable);
                trustedStackFrame_errorCounter := S f.(trustedStackFrame_errorCounter)
             |}.
  
+          (** A stackful handler is entered: the untrusted stack pointer was a capability, the
+              top frame's error counter is incremented, interrupts are enabled, the PCC is the
+              handler's, and the register file is [ExceptionEntry_PostRfSpec_Stackful].  The
+              spill predicate is required between the final memory and an existentially chosen
+              one, with the handler's register file, so it constrains the final memory only
+              through [NonStackMemPreserved] in [ExceptionEntry_Post]. *)
           Definition ExceptionEntry_Post_Stackful
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             exists exnInfo' frame frames compartment mem' csp,
@@ -1465,6 +1629,12 @@ Module SwitcherProperty.
              (ExceptionEntry_PostRfSpec_Stackful csp compartment (sts st).(thread_exceptionInfo)) (rf st).
 
           (* Note that this does not use the untrusted csp. *)
+
+          (** A stackless handler is entered: the top frame's error counter is incremented,
+              interrupts are enabled, the PCC is the handler's, and the register file is
+              [ExceptionEntry_PostRfSpec_Stackless]; no untrusted stack pointer is required and
+              nothing is spilled.  The clause equating an otherwise unused existential memory
+              with the final one constrains nothing. *)
           Definition ExceptionEntry_Post_Stackless
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             exists exnInfo' frame frames compartment mem',
@@ -1480,6 +1650,9 @@ Module SwitcherProperty.
              (ValidErrorHandlerPCC Stackless compartment (pcc st)) /\
              (ExceptionEntry_PostRfSpec_Stackless frame compartment (sts st).(thread_exceptionInfo)) (rf st).
      
+          (** Back in user mode, one of: a stackful handler, a stackless handler, a forced
+              unwind, or the thread dead (which constrains only the liveness status); and no byte
+              or tag outside the thread's stack changed. *)
           Record ExceptionEntry_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             { EEPost_Mode: ~(InSystemMode st)
             ; EEPost_Cases: ExceptionEntry_Post_Stackful tid st_init st
@@ -1495,6 +1668,11 @@ Module SwitcherProperty.
              - Alternatively, we can say the thread's PCC points to the switcher/scheduler region.
              - TODO: liveness?
            *)
+
+          (** The contract: from the precondition, the thread stays in system mode under the
+              invariant until it is back in user mode with [ExceptionEntry_Post], or stops with
+              no successor; reaching user mode is not required (the TODO above asks about
+              liveness). *)
           Definition ExceptionHandlerOk :=
            forall tid init,
             ExceptionEntry_Pre tid init ->
@@ -1510,10 +1688,16 @@ Module SwitcherProperty.
          *)
         End ExceptionHandler.
 
+        (** The error-handler return point: back to the compartment by a forced unwind, or the
+            thread's exit; the context-install path is commented out. *)
         Section ExceptionReturn.
+
+          (** [SwitcherEntry_Invariant]. *)
           Definition ExceptionReturn_Invariant (tid: nat) (st_init: ThreadState) (st: ThreadState) :=
             SwitcherEntry_Invariant tid st_init st.
 
+          (** At entry: the PCC is the error-handler return point, the trusted stack is valid,
+              and the invariant holds. *)
           Record ExceptionReturn_Pre (tid: nat) (st: ThreadState) : Prop :=
           { ERPre_PCCAddr: pcc st = ErrorHandlerReturnPCC
           ; ERPre_TrustedStack: ValidTrustedStack config (sts st).(thread_trustedStack)
@@ -1551,6 +1735,10 @@ Module SwitcherProperty.
           (*                              (readMemTagCapOk (mem st_init) (updateCapCursor cspCap (Nat.add (idx * ISA_CAPSIZE_BYTES))))) *)
           (*             (seq 1 NREGS_TO_SPILL). *)
 
+          (** Back in user mode by a forced unwind, or the thread dead (the liveness status
+              only); no byte or tag outside the stack changed.  The install-context case is
+              commented out above with its open points; the comment inside cites an RTOS issue
+              proposing to decouple that path from the exception return. *)
           Record ExceptionReturn_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             { ERPost_Mode: ~(InSystemMode st)
             ; ERPost_Cases: 
@@ -1565,6 +1753,7 @@ Module SwitcherProperty.
             ; ERPost_OnlyStackChanged: NonStackMemPreserved config tid (mem st_init) (mem st)
             }.
 
+          (** The contract, of the same shape as [ExceptionHandlerOk]. *)
           Definition ExceptionReturnOk :=
            forall tid init,
             ExceptionReturn_Pre tid init ->
@@ -1576,10 +1765,16 @@ Module SwitcherProperty.
          
         End ExceptionReturn.
 
+        (** The compartment-call entry point: into the callee with a new trusted-stack frame, or
+            back to the caller for lack of stack, a forced unwind, or the thread's exit. *)
         Section CompartmentCall.
+
+          (** [SwitcherEntry_Invariant]. *)
           Definition CompartmentCall_Invariant (tid: nat) (st_init: ThreadState) (st: ThreadState) :=
             SwitcherEntry_Invariant tid st_init st.
 
+          (** At entry: the PCC is the compartment-call entry point, the trusted stack is valid,
+              and the invariant holds. *)
           Record CompartmentCall_Pre (tid: nat) (st: ThreadState) : Prop :=
           { CCallPre_PCCAddr: pcc st = CompartmentCallPCC
           ; CCallPre_TrustedStack: ValidTrustedStack config (sts st).(thread_trustedStack)
@@ -1587,6 +1782,8 @@ Module SwitcherProperty.
           (* ; CCallPre_RA: *) (* caller return address, because we entered via a forward sentry *)
           }.
 
+          (** An argument register's value after the call: zero if its position is beyond the
+              entry's argument count, the caller's value otherwise. *)
           Definition ZeroArg (numArgs: nat) (regArgNum: nat) (init_rf: RegisterFile) (regIdx: nat) : CapOrBytes -> Prop :=
             fun v => RegP init_rf regIdx (fun old => v = if Nat.leb numArgs regArgNum then
                                                               inr zeroBytes
@@ -1594,6 +1791,11 @@ Module SwitcherProperty.
 
           (* Zero non-argument registers. *)
           (* TODO: check istatus *)
+
+          (** The register file handed to the callee: the return sentry, the callee's globals and
+              stack pointer, the six argument registers and [t0] kept or zeroed by position
+              against the argument count; every other register, the sealed-entry register
+              included, is zero by [RfSpec]'s default. *)
           Definition CompartmentCall_PostRf_Ok
             (istatus: InterruptStatus) 
             (init_rf: RegisterFile)
@@ -1615,11 +1817,17 @@ Module SwitcherProperty.
 
           (* TODO: check alignment and underflow. *) 
           (* Alternatively, could define in terms of restricting the initial csp. *)
+
+          (** The callee's stack capability: the caller's restricted to the addresses below
+              [newTop], with the cursor the reserved space below it (alignment and underflow
+              unchecked, per the TODO). *)
           Definition postCompartmentCallCSP (init_csp: Cap) (newTop: Addr): Cap :=
           (* Reserve some compartment-invocation local space. *)
           let newCursor := newTop - STACK_ENTRY_RESERVED_SPACE in
           setCapCursor (updateCapAddrs init_csp (filter(Nat.ltb newTop))) newCursor.
 
+          (** [CompartmentCall_PostRf_Ok] for the entry's interrupt status and argument count and
+              the compartment's CGP, every other register zero. *)
           Definition CompartmentCall_PostRfSpec_Ok
             (init_rf: RegisterFile)                       
             (entry: ExportEntry)
@@ -1651,12 +1859,17 @@ Module SwitcherProperty.
            * 3) The CSP was invalid (or an error occurred otherwise): unwind the stack.
            *)
 
+          (** Every address of the callee's stack capability is zero with its tag clear. *)
           Definition compartmentCalleeStackZeroed
             (newcsp: Cap) (mem: FullMemory) (mem': FullMemory) :=
             (forall addr, In addr newcsp.(capAddrs) ->
                        readByte mem' addr = zeroByte /\
                        readTag mem' (toCapAddr addr) = false).
 
+          (** The memory after a call: the callee's stack zeroed, the caller's callee-saved
+              registers, return address and globals spilled below its stack pointer, and the
+              stack above untouched.  Defined, but [CCall_Post_Ok] uses only
+              [compartmentCalleeStackZeroed]. *)
           Definition compartmentCallMemOk
             (initcsp: Cap) (initrf: RegisterFile) (newcsp: Cap) (mem: FullMemory) (mem': FullMemory) :=
             (* All addresses reachable by the new csp are zeroed. *)
@@ -1672,6 +1885,15 @@ Module SwitcherProperty.
                           MemEquivalentAtAddr mem mem' addr).
 
           (* TODO: check for stack size *)
+
+          (** A successful call: the caller's stack pointer was a valid CSP and its sealed-entry
+              register held a capability sealed with the switcher's key that resolves to a
+              compartment and an export entry; a new frame with the trusted CSP (the caller's,
+              lowered by the spill frame) and the entry is pushed; interrupts follow the entry;
+              the PCC is the compartment's at the entry's offset; the register file is
+              [CompartmentCall_PostRfSpec_Ok]; and the callee's stack is zeroed.  The spilling of
+              the caller's registers that the comment above describes is not required here, and
+              the stack-size check is a TODO. *)
           Definition CCall_Post_Ok
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             (exists sealedCapToExportTable compartment entry exnInfo' init_csp,
@@ -1712,6 +1934,8 @@ Module SwitcherProperty.
               *)
               compartmentCalleeStackZeroed csp' (mem st_init) (mem st)).
 
+          (** The two return registers after a call refused for lack of stack: the
+              not-enough-stack value and zero. *)
           Definition CCall_PostRf_NotEnoughStack
             (rf_init: RegisterFile)
             : RfSpecT :=
@@ -1720,6 +1944,11 @@ Module SwitcherProperty.
             ].
 
           (* Trusted stack and interrupt status is not changed. *)
+
+          (** A call refused for lack of stack: the trusted stack, the liveness status, the
+              interrupt status and MEPCC unchanged, MTCC set to the configuration's, the
+              exception payload unconstrained; the memory unchanged; the PCC the caller's return
+              address; the register file as it was except the two return registers. *)
           Definition CCall_Post_NotEnoughStack
             (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
             (exists exnInfo',
@@ -1739,6 +1968,9 @@ Module SwitcherProperty.
             RfSpec (CCall_PostRf_NotEnoughStack (rf st_init)) (rf st)
                    (fun idx v => RegP (rf st_init) idx (eq v)).
 
+          (** Back in user mode, one of: the call succeeded, it was refused for lack of stack, a
+              forced unwind, or the thread dead (the liveness status only); and no byte or tag
+              outside the thread's stack changed. *)
           Record CompartmentCall_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
           { CCPost_Mode: ~(InSystemMode st)
           ; CCPost_Cases: CCall_Post_Ok tid st_init st \/
@@ -1748,6 +1980,7 @@ Module SwitcherProperty.
           ; CCPost_OnlyStackChanged: NonStackMemPreserved config tid (mem st_init) (mem st)
           }.
 
+          (** The contract, of the same shape as [ExceptionHandlerOk]. *)
           Definition CompartmentCallOk :=
            forall tid init,
             CompartmentCall_Pre tid init ->
@@ -1765,16 +1998,27 @@ Module SwitcherProperty.
            registers; the switcher will zero other non-return argument
            and temporary registers.
         *)
+
+        (** The return point after a compartment call: back to the caller by a normal unwind, or
+            the thread's exit. *)
         Section CompartmentReturn.
+
+          (** [SwitcherEntry_Invariant]. *)
           Definition CompartmentReturn_Invariant (tid: nat) (st_init: ThreadState) (st: ThreadState) :=
             SwitcherEntry_Invariant tid st_init st.
 
+          (** At entry: the trusted stack is valid and the invariant holds.  As written, the PCC
+              required is [CompartmentCallPCC], the call entry point, rather than
+              [CompartmentReturnPCC], which the return sentry [switcherAfterCompartmentCallCap]
+              points at, and the invariant named is the call's. *)
           Record CompartmentReturn_Pre (tid: nat) (st: ThreadState) : Prop :=
           { CRetReturn_PCCAddr: pcc st = CompartmentCallPCC
           ; CRetReturn_TrustedStack: ValidTrustedStack config (sts st).(thread_trustedStack)
           ; CRetReturn_Invariant: CompartmentCall_Invariant tid st st
           }.
 
+          (** Back in user mode by a normal unwind, or the thread dead (the liveness status
+              only); no byte or tag outside the stack changed. *)
           Record CompartmentReturn_Post (tid: nat) (st_init: ThreadState) (st: ThreadState) : Prop :=
           { CRetPost_Mode: ~(InSystemMode st)
           ; CRetPost_Cases: Post_UnwindStackReturnOk tid st_init st \/
@@ -1782,6 +2026,7 @@ Module SwitcherProperty.
           ; CRetPost_OnlyStackChanged: NonStackMemPreserved config tid (mem st_init) (mem st)
           }.
 
+          (** The contract, of the same shape as [ExceptionHandlerOk]. *)
           Definition CompartmentReturnOk :=
           forall tid init,
            CompartmentReturn_Pre tid init ->
@@ -1806,10 +2051,20 @@ End SwitcherProperty.
    proving that isolated compartments do not share addresses,
    sentries, or switcher-sealed data caps in the initial state.
  *)
+
+(** * Compartment isolation of the initial state
+
+    Compartments not connected on the audit graph share no addresses, sentries or switcher-sealed
+    capabilities in a valid initial state, and a thread running in one of them reaches nothing of
+    the other.  Proved for the initial state only ([InitialPropertyHolds]), as the comment above
+    says; [InitialProperty] is not shown preserved by steps in general ([ExceptionStepOk__User]
+    covers one kind of step). *)
 Module CompartmentIsolationValidation.
   Import ListNotations.
   Import Configuration.
   Import Separation.
+
+  (** The parameters of the model and the export-table lookup, bound for the module. *)
   Section WithContext.
     Context [ISA: ISA_params].
     Context {machineTypeParams: MachineTypeParams}.
@@ -1832,6 +2087,12 @@ Module CompartmentIsolationValidation.
        This allows C1 --> L1 and C2 --> L1, but not C1 --> C2 (libraries can be shared)
        But if C1 --> L1 <--> C2, then C1 <--> C2.
      *)
+
+    (** The audit graph on compartment indices, as the comment above describes: an import of a
+        sealed export-table entry connects the two compartments both ways, an import of a library
+        sentry connects the importer to the library, and the relation is reflexive on valid
+        indices and transitive.  Sharing a library does not connect two compartments unless the
+        library imports from one of them. *)
     Inductive ReachableCompartment : Config -> nat -> nat -> Prop :=
     | ReachableCaller:
         forall config idx1 idx2 c1 cap addr,
@@ -1864,16 +2125,20 @@ Module CompartmentIsolationValidation.
           ReachableCompartment config idx2 idx3 ->
           ReachableCompartment config idx1 idx3.
 
+    (** The boolean form of [ThreadHasSystemPerm]. *)
     Definition threadHasSystemPerm (t: Thread) : bool :=
       existsb (Perm.t_beq Perm.System)
            (t.(thread_userState).(thread_pcc).(capPerms)).
             
+    (** A user-mode thread running in compartment [cid]: its PCC lacks the system permission and
+        the top frame of its trusted stack names an export-table entry of [cid]. *)
     Definition ThreadInUserCompartment (config: Config) (mem: FullMemory) (t: Thread) (cid: nat) : Prop :=
       (~ ThreadHasSystemPerm t) /\
       exists frame eid,
         hd_error t.(thread_systemState).(thread_trustedStack).(trustedStack_frames) = Some frame /\
         LookupExportTableCompartmentId config frame.(trustedStackFrame_calleeExportTable) = Some (cid, eid).
 
+    (** Two compartments, neither a library, not connected on the audit graph. *)
     Definition MutuallyIsolatedCompartment (config: Config) (idx1 idx2: nat) : Prop :=
       exists c1 c2,
         nth_error config.(configCompartments) idx1 = Some c1 /\
@@ -1882,6 +2147,8 @@ Module CompartmentIsolationValidation.
         isLibrary c2 = false /\
           (ReachableCompartment config idx1 idx2 -> False).
 
+    (** A well-formed configuration, fixed; the comment above lists the properties isolation
+        rests on. *)
     Section WithConfig.
       Variable config: Config.
       Variable (pf_wf_config: WFConfig config).
@@ -1901,12 +2168,17 @@ Module CompartmentIsolationValidation.
 
          NB: for inductive proof, we likely want make these transitively closed properties.
        *)
+
+      (** No address of compartment [cid] is reachable with load, store or execute permission
+          from [srcCaps]. *)
       Definition AddrsIsolatedFromCompartment
         (mem: FullMemory) (srcCaps: list Cap) (cid: nat): Prop :=
         (forall addr,
            ReachableRWXAddr mem srcCaps addr ->
            AddrInCompartment config cid addr ->
            False).
+
+      (** No sentry reachable from [srcCaps] points into compartment [cid]. *)
       Definition SentriesIsolatedFromCompartment
         (mem: FullMemory) (srcCaps: list Cap) (cid: nat): Prop :=
         (forall cap addr,
@@ -1915,6 +2187,9 @@ Module CompartmentIsolationValidation.
             In addr cap.(capAddrs) ->
             AddrHasProvenance config addr (Provenance_Compartment cid) ->
             False).
+
+      (** No capability sealed with the switcher's key reachable from [srcCaps] points into
+          compartment [cid]. *)
       Definition SealedDataCapsIsolatedFromCompartment
         (mem: FullMemory) (srcCaps: list Cap) (cid: nat): Prop :=
         (forall cap addr,
@@ -1924,12 +2199,15 @@ Module CompartmentIsolationValidation.
             AddrHasProvenance config addr (Provenance_Compartment cid) ->
             False).
 
+      (** The three together. *)
       Definition IsolatedFromCompartment
         (mem: FullMemory) (srcCaps: list Cap) (cid: nat) : Prop :=
         AddrsIsolatedFromCompartment mem srcCaps cid /\
         SentriesIsolatedFromCompartment mem srcCaps cid /\
         SealedDataCapsIsolatedFromCompartment mem srcCaps cid.
 
+      (** In [m]'s memory, every compartment is isolated, through its initial capabilities, from
+          every compartment it is mutually isolated from. *)
       Definition CompartmentIsolation (m: Machine) : Prop :=
         forall idx1 idx2 c1 c2,
           idx1 <> idx2 ->
@@ -1938,6 +2216,9 @@ Module CompartmentIsolationValidation.
           nth_error config.(configCompartments) idx2 = Some c2 ->
           IsolatedFromCompartment m.(machine_memory)
                                   (capsOfCompartment c1) idx2.                                       
+
+      (** A user-mode thread running in a compartment is isolated, through its user-state
+          capabilities, from every compartment that compartment is mutually isolated from. *)
       Definition CompartmentIsolatedThreads (m: Machine) : Prop :=
         forall idx1 idx2,
         idx1 <> idx2 ->
@@ -1949,16 +2230,21 @@ Module CompartmentIsolationValidation.
                                 (capsOfUserTS thread.(thread_userState))
                                 idx2.
 
+      (** [CompartmentIsolatedThreads] of a state's machine. *)
       Definition PIsolation (st: State) : Prop :=
         CompartmentIsolatedThreads (fst st).
 
 
+      (** User-mode threads trap into the switcher, compartments are isolated, and threads are
+          isolated. *)
       Record InitialProperty' (st: State) : Prop :=
         { Inv_UserMode: UserModeInvariant config (fst st)
         ; Inv_CompartmentIsolation: CompartmentIsolation (fst st)
         ; Inv_IsolatedThreads: CompartmentIsolatedThreads (fst st)
         }.                                                           
       
+      (** [GlobalInvariant] and [InitialProperty']: what [InitialPropertyHolds] establishes of a
+          valid initial state. *)
       Definition InitialProperty (st: State) : Prop :=
         GlobalInvariant config (fst st) /\
           InitialProperty' st.
@@ -1996,6 +2282,7 @@ Module CompartmentIsolationValidation.
             pose proof (Inv_UserMode _ H) as H'
         end.
 
+      (** A thread in a user compartment lacks the system permission, by definition. *)
       Lemma ThreadInUserCompartmentDoesNotHaveSystemPerm:
         forall config mem thread id,
           ThreadInUserCompartment config mem thread id ->
@@ -2005,6 +2292,9 @@ Module CompartmentIsolationValidation.
         cbv[ThreadInUserCompartment]. intros. destruct_products. congruence.
       Qed.
 
+      (** A trap by a user-mode thread (its PCC saved to MEPCC, MTCC installed as the PCC, a
+          payload and a status set, memory and the other threads unchanged) preserves
+          [InitialProperty'], when the global invariant holds before and after. *)
       Lemma ExceptionStepOk__User :
         forall m tr m' thread exn status,
           GlobalInvariant config m ->
@@ -2069,6 +2359,9 @@ Module CompartmentIsolationValidation.
         constructor; auto; cbn.
       Qed.
 
+      (** Every capability of [caps'] is one of [caps], a sentry obtained by restricting and
+          sealing an unsealed one of them, or the unsealing of a sentry among them: what a call
+          instruction may produce from what it had. *)
       Definition ReachableViaCallRet (caps caps': list Cap) :=
         forall cap, In cap caps' ->
                     In cap caps \/
@@ -2108,6 +2401,8 @@ Module CompartmentIsolationValidation.
           | _ => progress (auto with ReachableCap)
           end.
 
+      (** Running in a user compartment depends only on the system state and the absence of the
+          system permission, not on the rest of the user state. *)
       Lemma ThreadInUserCompartmentSystemEquiv:
         forall config mem thread thread' idx,
           ~ ThreadHasSystemPerm thread' ->
@@ -2118,6 +2413,8 @@ Module CompartmentIsolationValidation.
         cbv[ThreadInUserCompartment]. intros. rewrite<-H0. destruct_products; eauto.
       Qed.
 
+      (** A well-formed call that succeeds produces a PCC and register file reachable, in the
+          sense of [ReachableViaCallRet], from the user state it started with. *)
       Lemma WfCallSentryInst_CapsReached :
         forall callSentryInst srcReg optLink userCtx mem istatus pcc' rf' istatus',
         ValidRf (thread_rf userCtx) ->
@@ -2166,6 +2463,7 @@ Module CompartmentIsolationValidation.
           + left. right. auto.
       Qed.
 
+      (** The boolean and the propositional forms agree. *)
       Lemma threadHasSystemPerm_false_iff:
         forall thread,
           threadHasSystemPerm thread = false <-> ~(ThreadHasSystemPerm thread).
@@ -2221,6 +2519,8 @@ Module CompartmentIsolationValidation.
         | _ => progress (saturate_list; repeat simpl_match)
         end; auto.
 
+      (** In a valid initial state, no address of another compartment is reachable with load,
+          store or execute permission from a compartment's initial capabilities. *)
       Lemma AddressesInitiallyIsolated:
         forall idx1 idx2 initial_machine c1 c2,
           ValidInitialState config initial_machine ->
@@ -2245,6 +2545,7 @@ Module CompartmentIsolationValidation.
             learn_hyp (H _ H1)
           end.
 
+      (** A valid initial state satisfies [CompartmentIsolation]. *)
       Lemma PCompartmentIsolation_InitCompartments:
         forall initial_machine,
           ValidInitialState config initial_machine ->
@@ -2268,6 +2569,7 @@ Module CompartmentIsolationValidation.
             saturate_invariants.
       Qed.
 
+      (** Address isolation is preserved by shrinking the source set. *)
       Lemma AddrsIsolatedFromCompartmentSubset:
         forall mem caps idx caps',
         AddrsIsolatedFromCompartment mem caps idx ->
@@ -2278,6 +2580,7 @@ Module CompartmentIsolationValidation.
         intros. eapply H; eauto. eapply ReachableRWXAddrSubset; eauto.
       Qed.
 
+      (** Sentry isolation is preserved by shrinking the source set. *)
       Lemma SentriesIsolatedFromCompartmentSubset:
         forall mem caps idx caps',
         SentriesIsolatedFromCompartment mem caps idx ->
@@ -2287,6 +2590,8 @@ Module CompartmentIsolationValidation.
         cbv[SentriesIsolatedFromCompartment].
         intros. eapply H; eauto. eapply ReachableCapIncrease; eauto.
       Qed.
+
+      (** Sealed-capability isolation is preserved by shrinking the source set. *)
       Lemma SealedDataCapsIsolatedFromCompartmentSubset:
         forall mem caps idx caps',
         SealedDataCapsIsolatedFromCompartment mem caps idx ->
@@ -2297,6 +2602,7 @@ Module CompartmentIsolationValidation.
         intros. eapply H; eauto. eapply ReachableCapIncrease; eauto.
       Qed.
 
+      (** The three together. *)
       Lemma IsolatedFromCompartmentSubset:
         forall mem caps caps' idx,
           IsolatedFromCompartment mem caps idx ->
@@ -2319,6 +2625,8 @@ Module CompartmentIsolationValidation.
             inv H
           end.
 
+      (** What a valid initial thread's user state can reach in the initial memory, its initial
+          CSP and its starting compartment's capabilities can reach. *)
       Lemma InitialThreadCapSubset:
         forall thread cap meta compartment ,
           ValidInitialThread config meta thread ->
@@ -2333,6 +2641,10 @@ Module CompartmentIsolationValidation.
       Qed.
 
       (* For CSP *)
+
+      (** A capability reachable from [x :: caps] is reachable from [caps] alone when [x] is an
+          unsealed capability holding no keys, covering only untagged memory, and not
+          restrictable to that capability: the shape of an initial stack capability. *)
       Lemma ReachableCapRestrictCSP:
         forall mem (cap: Cap) caps x,
           x.(capSealingKeys) = [] ->
@@ -2380,6 +2692,9 @@ Module CompartmentIsolationValidation.
           + eapply IHReachableCap2; auto; cbn in *; intros.
       Qed.
       
+      (** A valid initial thread whose starting compartment is isolated from [idx2] and not
+          connected to it is itself isolated from [idx2] through its user state, under separated
+          footprints. *)
       Lemma IsolatedFromCompartmentInitialThread:
         forall c1 idx2 x y threadId,
         Separated (ConfigFootprints config) ->
@@ -2439,6 +2754,7 @@ Module CompartmentIsolationValidation.
           + rewrite<-hvalidcspr. eapply InitialThreadCapSubset; eauto.
        Qed.
 
+        (** The compartment a valid initial thread's top frame names is its starting compartment. *)
         Lemma ValidInitialThreadImpliesCompartment:
           forall config meta thread cid frame compartment eid,
           ValidInitialThread config meta thread ->
@@ -2456,6 +2772,7 @@ Module CompartmentIsolationValidation.
           end; destruct_products; option_simpl; simplify_tupless; eauto.
         Qed.
 
+      (** A valid initial state whose compartments are isolated has isolated threads. *)
       Lemma PCompartmentIsolation_InitThreads:
         forall initial_machine,
           ValidInitialState config initial_machine ->
@@ -2486,6 +2803,8 @@ Module CompartmentIsolationValidation.
         eapply IsolatedFromCompartmentInitialThread; eauto.
       Qed.
         
+      (** The module's result: a valid initial state with the empty trace satisfies
+          [InitialProperty]. *)
       Lemma InitialPropertyHolds :
         forall initial_machine,
         ValidInitialState config initial_machine ->
