@@ -88,7 +88,7 @@ Four modules, each binding its parameters in a `WithContext` section (the `WithC
 
 ## The main theorem
 
-The theorem is stated and proved at the end of [`src/Properties.v`](src/Properties.v#L2558-L2569), in module `ThreadIsolatedMonotonicity`: the statement at lines 2558 to 2562 and the proof at lines 2563 to 2569, which applies the three lemmas `InvariantInitial` (line 2388), `InvariantStep` (line 2520) and `InvariantUse` (line 2541) to the `always` combinator.  The property it states, `PThreadIsolatedMonotonicity`, is defined at [line 2372](src/Properties.v#L2372).  Line numbers are those of the sources at commit `1088d46`; later changes to `Properties.v` move them.
+The theorem is stated and proved at the end of [`src/Properties.v`](src/Properties.v#L3189-L3200), in module `ThreadIsolatedMonotonicity`: the statement at lines 3189 to 3193 and the proof at lines 3194 to 3200, which applies the three lemmas `InvariantInitial` (line 2970), `InvariantStep` (line 3132) and `InvariantUse` (line 3155) to the `always` combinator.  The property it states, `PThreadIsolatedMonotonicity`, is defined at [line 2938](src/Properties.v#L2938).  Line numbers are those of the sources with the coqdoc comments, at commit `342c40e`; later changes to `Properties.v` move them.
 
 ```
 Theorem ThreadIsolatedMonotonicity :
