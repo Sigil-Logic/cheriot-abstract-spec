@@ -3164,11 +3164,11 @@ Module ThreadIsolatedMonotonicity.
 
     (** ** The theorem
 
-        For every well-formed configuration [config] and every [initial_machine] that is a
-        valid initial state of [config] with isolated threads: in every state reachable from
-        [(initial_machine, [])] by [MachineStep] whose trace is same-domain, each thread can
-        reach only capabilities that were reachable from its initial state
-        ([PThreadIsolatedMonotonicity]).
+        For every well-formed configuration [config] and every [initial_machine] that is a valid
+        initial state of [config] whose threads start with pairwise-disjoint read/write reach: in
+        every state reachable from [(initial_machine, [])] by [MachineStep] whose trace so far
+        contains only same-domain events, each thread can reach only capabilities that were
+        reachable from its initial state ([PThreadIsolatedMonotonicity]).
 
         [Combinators.always step P init] (in Utils.v) holds when some invariant is true initially,
         is preserved by every step and implies [P]; the "every reachable state" reading follows
