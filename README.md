@@ -131,6 +131,10 @@ Related work:
 - [CHERIoT-Ibex observational correctness](https://arxiv.org/abs/2502.04738) and [VeriCHERI](https://arxiv.org/abs/2407.18679): verification of CHERIoT implementations at the RTL level.
 - Murali Vijayaraghavan, *Rigorous Hardware Software Codesign for Secure Compartmentalization on Embedded Devices*, [CHERITech25](https://cheri-alliance.org/wp-content/uploads/2025/11/3.3-Murali-Vijayaraghavan-Rigorous-Hardware-Software-Codesign-for-Secure-Compartmentalization-on-Embedded-Devices-CHERITech25.pdf) (November 2025): the framing of this model, with the RTOS specification as constraints on atomic operations.
 
+## Contributing
+
+Contributions are welcome as pull requests.  They need a Google Contributor License Agreement on file for every author, as [`CONTRIBUTING.md`](CONTRIBUTING.md) explains, and review by the maintainers; a pull request whose `cla/google` check is red cannot merge.
+
 ## License
 
 Apache License 2.0; see `LICENSE` and the headers of the sources.
